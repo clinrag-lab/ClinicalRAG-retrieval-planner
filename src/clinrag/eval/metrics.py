@@ -117,3 +117,39 @@ def _as_ids(value: Any) -> list[int]:
     if isinstance(value, (str, bytes)) or not isinstance(value, Iterable):
         raise TypeError("set answers must be an iterable of hadm_ids")
     return [int(v) for v in value]
+
+
+# ---- retrieval scoring for the experiment runner -------------------------------------
+
+
+def retrieval_score(question: WorkloadQuestion, items: Sequence[dict[str, Any]], k: int) -> Score:
+    """How well retrieved evidence covers the gold answer, by question type.
+
+    items: evidence in retrieval order, each with "hadm_id" and "source"
+    ("relational" lab rows also carry "valuenum").
+
+    A, latest / max     "value_row":   1.0 if a lab row of the gold admission with
+                                       the gold value came back
+    A, ever above       "value_row":   1.0 if whether any returned row passes the
+                                       filter agrees with the gold yes/no
+    B, per-admission    "gold_note":   1.0 if a note of the gold admission came back
+    B list, C, D        "normalized_recall": normalized_recall_at_k over the hadm_ids
+                                       of the note items, in rank order
+    """
+    spec, template = question.spec, question.template_id
+    gold = question.gold["answer"]
+    if spec.qclass == "A":
+        flt = spec.relational_filter
+        rows = [
+            i for i in items
+            if i.get("source") == "relational" and i.get("valuenum") is not None
+            and (flt is None or flt.applies_to(int(i["hadm_id"])))
+        ]
+        if template.startswith("A_ever_above_"):
+            passed = any(flt is not None and flt.matches(float(i["valuenum"])) for i in rows)
+            return Score("value_row", float(passed == bool(gold)))
+        return Score("value_row", float(any(math.isclose(float(i["valuenum"]), float(gold), rel_tol=1e-9) for i in rows)))
+    notes = [int(i["hadm_id"]) for i in items if i.get("source") == "notes"]
+    if spec.qclass == "B" and template.startswith("B_admission_"):
+        return Score("gold_note", float(int(question.gold["hadm_id"]) in notes))
+    return Score("normalized_recall", normalized_recall_at_k(notes, gold, k))
