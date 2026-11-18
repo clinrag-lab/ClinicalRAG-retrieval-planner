@@ -22,6 +22,9 @@ outputs/runs/<timestamp>/):
     results.csv    per router and class: recall, tokens, latency, overhead, fallbacks
     results.md     the same as tables
     run.json       arguments and planner config
+    analysis/      cost model check, order check, overhead share, tau sweep
+                   (clinrag.eval.analysis; skip with --no-analysis)
+    figures/       fig1 to fig4
 
 P2 routers train their classifier on <workload>/dev.jsonl at start-up, so on
 the dev split P2 is evaluated on its own training questions.
@@ -298,6 +301,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=None, help="planner config YAML, e.g. outputs/calibrated_config.yaml")
     parser.add_argument("--limit", type=int, default=None, help="use only the first N questions (smoke runs)")
     parser.add_argument("--out", type=Path, default=None, help="default outputs/runs/<timestamp>/")
+    parser.add_argument("--no-analysis", action="store_true", help="skip the analyses and figures")
+    parser.add_argument(
+        "--sweep-on", choices=["paraphrased", "original", "none"], default="paraphrased",
+        help="questions for the P2 TF-IDF tau sweep: held-out phrasings (default), as written, or skip",
+    )
     return parser.parse_args(argv)
 
 
@@ -315,7 +323,15 @@ def main(argv: list[str] | None = None) -> Path:
                     "planner_config": asdict(config), "n_questions": len(questions)}, indent=2) + "\n",
         encoding="utf-8",
     )
-    run_experiment(sources, questions, args.routers, config, args.workload, out, args.tau, args.repeats, progress=print)
+    records = run_experiment(
+        sources, questions, args.routers, config, args.workload, out, args.tau, args.repeats, progress=print
+    )
+    if not args.no_analysis:
+        from clinrag.eval.analysis import run_analyses
+
+        start = time.perf_counter()
+        run_analyses(records, questions, sources, config, args.workload, out, args.repeats, args.sweep_on)
+        print(f"analyses: {time.perf_counter() - start:.1f} s")
     print(f"results: {out}")
     return out
 
