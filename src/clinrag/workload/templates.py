@@ -4,7 +4,7 @@ A  relational only     per-admission lab questions (most recent, max, ever above
 B  notes only          which discharge summaries mention a concept, and
                        per-admission yes/no: does this admission's summary mention it
 C  filter + notes      among admissions with a lab above T, which summaries mention a concept
-D  graph + notes       among admissions with a diagnosis category, which summaries mention a concept
+D  graph + notes       among admissions with a diagnosis chapter or block, which summaries mention a concept
 
 Gold answers come from SQL over the hosp tables and the note_concepts and
 note_negations tables.
@@ -332,6 +332,7 @@ def class_d(data: WorkloadData, concepts: Iterable[str] = CONCEPTS) -> list[Work
                 "answer": sorted(in_category & data.concept_admissions(concept)),
                 "template_id": f"D_{name}_{slug(concept)}",
                 "selectivity": len(in_category) / n,
+                "category_level": category.level,
             }
             questions.append(WorkloadQuestion(spec, gold))
     return questions

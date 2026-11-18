@@ -44,6 +44,10 @@ class RelationalQuery:
       only admissions with at least one of those diagnosis codes.
     - lab unset, icd_codes set: one result row per diagnosis row with one of the codes.
     - neither set: invalid.
+    icd_codes come from GraphSource.expand. The real ICD graph returns
+    version-qualified codes ("10:I214", "9:4019"; see
+    clinrag.workload.icd_categories.qualify), which must be matched on
+    (icd_version, icd_code).
     """
 
     lab: StructuredFilter | None = None
@@ -98,7 +102,10 @@ class GraphSource(ABC):
 
     @abstractmethod
     def expand(self, category: str) -> list[str]:
-        """All ICD codes under a category such as "cardiovascular"."""
+        """All ICD codes under a category such as "circulatory" or "heart_failure".
+
+        Codes may be version-qualified ("10:I214"); see RelationalQuery.
+        """
 
     @abstractmethod
     def descendant_count(self, category: str) -> int:

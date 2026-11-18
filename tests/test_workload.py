@@ -176,6 +176,18 @@ def test_class_d_gold(data):
     assert gold[("renal_genitourinary", "dialysis")]["selectivity"] == pytest.approx(3 / 8)
     assert gold[("endocrine", "insulin")]["answer"] == [h(1), h(8)]
     assert gold[("respiratory", "dialysis")]["answer"] == []
+    assert gold[("circulatory", "chest pain")]["category_level"] == "chapter"
+
+
+def test_class_d_block_gold(data):
+    gold = {(q.spec.category, q.spec.note_query): q.gold for q in class_d(data, concepts=CONCEPT_TAGS)}
+    # heart failure (I509): 04, 07; chronic kidney disease (N185, N186): 02, 07
+    assert gold[("heart_failure", "dialysis")]["answer"] == [h(7)]
+    assert gold[("heart_failure", "dialysis")]["selectivity"] == pytest.approx(2 / 8)
+    assert gold[("heart_failure", "dialysis")]["category_level"] == "block"
+    assert gold[("chronic_kidney_disease", "dialysis")]["answer"] == [h(2), h(7)]
+    assert gold[("acute_kidney_injury", "dialysis")]["answer"] == []  # N179 only in 04
+    assert gold[("diabetes", "insulin")]["answer"] == [h(1), h(8)]
 
 
 def test_gold_rule_skips_empty_and_too_broad(data):

@@ -73,13 +73,15 @@ python -m clinrag.workload.build --tables-dir data/mimic-iv-demo --notes-dir dat
 | B | notes | which discharge summaries mention dialysis | sorted hadm_ids |
 | B | notes (one admission) | according to the discharge summary for admission X, was dialysis performed | 1 / 0; about half are no, some with a negated mention |
 | C | relational + notes | among admissions with creatinine > T, which mention dialysis | sorted hadm_ids, plus filter selectivity |
-| D | graph + relational + notes | among admissions with any renal diagnosis, which mention dialysis | sorted hadm_ids, plus category selectivity |
+| D | graph + relational + notes | among admissions with any renal (chapter) or chronic kidney disease (block) diagnosis, which mention dialysis | sorted hadm_ids, plus category selectivity and level |
 
 Questions whose gold list is empty or covers more than 95% of admissions are
 skipped, and each class is capped at 100. Dev and test are split by
 template_id (about 60/40), so no template appears in both. Concept
-probabilities are in `CONCEPT_PROBS` in `workload/notes_gen.py`, and diagnosis
-categories are in `workload/icd_categories.py`.
+probabilities are in `CONCEPT_PROBS` in `workload/notes_gen.py`. Diagnosis
+categories are in `workload/icd_categories.py` as a two-level hierarchy (4
+chapters, 9 blocks), and `sources/icd_graph.py` expands either level into the
+version-qualified codes present in the data (`"10:I509"`, `"9:4280"`).
 
 ## Running tests
 
