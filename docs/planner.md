@@ -48,6 +48,12 @@ Note-search latency, with `scan(n) = note_scan_ms_per_1k_notes * n / 1000`,
 | unfiltered | `scan(total_notes) + fetch(k)` |
 | search_first | `scan(total_notes) + fetch(min(ceil(k * total_notes / matching_notes), total_notes))` |
 | filter_first | `id_filter(matching_admissions) + scan(matching_notes) + fetch(k)` |
+| unfiltered, per-admission question (`note_hadm_id` set) | `id_filter(1) + scan(scoped_notes) + fetch(k)` |
+
+Per-admission class B questions search only one admission's notes (the
+executor restricts the search to `note_hadm_id`), so they are costed as
+filter_first over that admission. The probes collect `scoped_notes` with
+`count_notes_for([note_hadm_id])`.
 
 A flat vector index scores every note it searches, so unfiltered and
 search-first queries pay for all notes regardless of k, while filter-first
@@ -90,3 +96,123 @@ an input for and never restricts the note search. It always searches notes,
 using the question text if there is no note query. Graph codes still feed its
 relational step. Without a category it has no graph step, so for a
 relational + notes question it has the same steps as `:unfiltered`.
+
+## Routing
+
+The cost planner above needs a question's required sources. A router decides
+them. Every router implements `Router` (`planner/router.py`): a `name` and
+`decide(question) -> PlanDecision`. The experiment runner executes each
+decision and logs one `RoutingResult` per (router, question), with these fields:
+router, qid, class, chosen plan, predicted and required sources, planning
+overhead, estimated cost, and the measured tokens, latency, sources queried
+and fallbacks used.
+
+| router | name | sources from | plan choice | overhead |
+|---|---|---|---|---|
+| `OracleCostRouter` | `oracle_cost` | true `required_sources` | CostPlanner | probes + costing |
+| `RulePlanner` (P1) | `rules` | keyword rules | fixed shape | rules only |
+| `ClassifierCostRouter` (P2) | `classifier_cost` | `SourceClassifier` at `tau` | CostPlanner | classifier + probes + costing |
+
+`OracleCostRouter` is an upper bound for analysis, not a contender. No
+deployable router knows the true sources.
+
+**P1 rules** (`planner/rule_planner.py`):
+
+- lab name or comparison word: relational
+- ICD category name: graph + relational
+- "summary", "mention" or "documented": notes
+- nothing fires: notes
+
+The plan runs graph, then relational, then notes. A relational filter combined
+with notes is always filter_first: no search_first, no cost model, no probes.
+Its `est_cost` is `None`.
+
+**P2** (`ClassifierCostRouter`) predicts a probability per source, keeps
+sources with `p >= tau`, and runs CostPlanner on a copy of the question
+restricted to them. When the restriction drops a source, its `query_all`
+candidate is replaced by `query_all` over every source the question has
+inputs for, costed with probes of that wider scope. The fallback can then
+still reach a source the classifier missed.
+
+**Restricting a question** (`restrict_question`). Routers predict sources;
+the question's parsed inputs (lab filter, ICD category, note query) are reused
+as given. A predicted source is kept only if it can run:
+
+- graph needs a category, and keeps relational, which consumes the codes;
+- relational needs a lab filter, or graph codes;
+- notes always runs, searching the question text when there is no note query.
+
+A category is cleared when graph is dropped, and the lab filter when
+relational is dropped. If nothing predicted can run, the router uses its most
+preferred source that can: the most probable one for P2, notes for P1.
+
+## Source classifier
+
+`SourceClassifier` (`planner/classifier.py`) trains one logistic regression
+per source on the question text only. Its features are:
+
+- TF-IDF of word 1-2 grams, with admission ids replaced by `admid` and other
+  numbers by `num`. With `featurizer="bge"`, BAAI/bge-base-en-v1.5 embeddings
+  instead; sentence-transformers is imported only then.
+- Five binary rule features: a known lab name, a number or comparison,
+  discharge summary / mention / documented, a known ICD category name, and an
+  admission id.
+
+The classifier works like this:
+
+- `predict_proba(question)` returns a probability per source, and
+  `predict(question, tau)` returns the sources with `p >= tau`. Each call sets
+  `last_latency_ms`, which P2 counts as planning overhead.
+- A source whose training label never varies gets a constant probability.
+- Misses are left to the fallback; the classifier never adds sources by default.
+
+Train it and write its report:
+
+```
+python -m clinrag.planner.train_classifier --workload-dir data/workload \
+    --out outputs/classifier.joblib --featurizer tfidf
+```
+
+The script trains on `dev.jsonl` only. The report, `outputs/classifier_report.json`
+(named `<out stem>_report.json`), contains:
+
+- per-source precision, recall and F1, and exact-match accuracy of the
+  predicted source set, both from 5-fold cross-validation on dev grouped by
+  `template_id` and on `test.jsonl`;
+- mean and p95 single-question predict latency;
+- for tau = 0.1 .. 0.9 on test, the fraction of questions missing a needed
+  source and the average number of sources predicted. This is the routing
+  half of the tau sweep.
+
+## Evidence check and fallback
+
+`check_evidence(result, question, config)` (`planner/fallback.py`) fails a
+result in any of these cases:
+
+- it has no evidence items;
+- its note search returned no notes;
+- its best note `score` is below `min_similarity`;
+- its note search was filtered (filter_first, search_first, or scoped to
+  `note_hadm_id`) and fewer than `min_surviving_notes` notes survived.
+
+Note items carry their similarity as `score`.
+
+`run_with_fallback(decision, sources, question, config)` runs the chosen plan.
+While the check fails, it runs the next plan from `decision.candidates`:
+
+- only feasible candidates, cheapest first (uncosted P1 candidates in their
+  listed order);
+- the next plan must query every source the failed plan did plus at least one
+  more, or be `query_all`;
+- a candidate with the same steps as a plan already run is skipped (for a
+  notes-only question, `query_all` is the same search as `notes_only`).
+
+It stops after `max_fallbacks` extra plans or when no candidate is left.
+Tokens and latency are summed over every attempt. Each attempt is recorded
+with its plan and the reason its check failed.
+
+| key | default | meaning |
+|---|---|---|
+| `min_similarity` | 0.3 | best note score below this fails the check |
+| `min_surviving_notes` | 1 | a filtered note search keeping fewer notes fails |
+| `max_fallbacks` | 2 | extra plans run after the first |
