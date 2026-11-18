@@ -21,5 +21,21 @@ probe_k: 20
 # Token weight in plan cost.
 alpha: 1.0
 
+# Planner cost model. Latencies and token averages are starting guesses;
+# calibrate them on real runs.
+
+# Search-first is only used if it needs at most this many candidates.
+max_candidates: 1000
+
+# Average tokens per relational result row and per note chunk.
+avg_tokens_per_row: 20
+avg_tokens_per_chunk: 256
+
+# Estimated latency (ms) of one relational query, one graph expansion,
+# and note search per 1000 candidates scored.
+relational_ms: 20
+graph_ms: 1
+note_search_ms_per_1k_candidates: 10
+
 # Where run outputs are written (git-ignored).
 output_dir: outputs/
