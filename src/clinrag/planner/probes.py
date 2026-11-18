@@ -18,6 +18,8 @@ class Probes:
     matching_admissions: distinct admissions in those rows.
     total_notes:         note chunks in the index.
     matching_notes:      note chunks belonging to the matching admissions.
+    scoped_notes:        note chunks of the question's note_hadm_id admission, for
+                         per-admission note questions.
     probe_scores:        top probe_k similarity scores for the note query.
     graph_codes:         ICD codes under the question's category.
     probe_ms:            wall time spent probing.
@@ -27,6 +29,7 @@ class Probes:
     matching_admissions: int | None = None
     total_notes: int | None = None
     matching_notes: int | None = None
+    scoped_notes: int | None = None
     probe_scores: tuple[float, ...] = ()
     graph_codes: int | None = None
     probe_ms: float = 0.0
@@ -41,7 +44,8 @@ def run_probes(question: QuestionSpec, sources: Sources, config: PlannerConfig) 
     - notes:      total chunk count (also needed to cost the query_all baseline,
                   so read whenever a notes source exists), probe_search with
                   probe_k, and count_notes_for on the matching ids when the
-                  question also has a relational filter.
+                  question also has a relational filter, or on [note_hadm_id]
+                  when the question is scoped to one admission's notes.
     """
     start = time.perf_counter()
     required = question.required_sources
@@ -62,7 +66,7 @@ def run_probes(question: QuestionSpec, sources: Sources, config: PlannerConfig) 
         matching_ids = relational.matching_ids(query)
         matching_admissions = len(matching_ids)
 
-    total_notes = matching_notes = None
+    total_notes = matching_notes = scoped_notes = None
     probe_scores: tuple[float, ...] = ()
     if NOTES in required:
         notes = sources.require_notes()
@@ -71,6 +75,8 @@ def run_probes(question: QuestionSpec, sources: Sources, config: PlannerConfig) 
         probe_scores = tuple(notes.probe_search(question.note_query, config.probe_k))
         if RELATIONAL in required:
             matching_notes = notes.count_notes_for(matching_ids)
+        if question.note_hadm_id is not None:
+            scoped_notes = notes.count_notes_for([question.note_hadm_id])
     elif sources.notes is not None:
         total_notes = sources.notes.total_notes()
 
@@ -79,6 +85,7 @@ def run_probes(question: QuestionSpec, sources: Sources, config: PlannerConfig) 
         matching_admissions=matching_admissions,
         total_notes=total_notes,
         matching_notes=matching_notes,
+        scoped_notes=scoped_notes,
         probe_scores=probe_scores,
         graph_codes=graph_codes,
         probe_ms=(time.perf_counter() - start) * 1000.0,

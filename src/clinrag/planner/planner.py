@@ -34,7 +34,14 @@ class ScoredPlan:
 
 @dataclass(frozen=True)
 class PlanDecision:
-    """Everything the planner decided for one question."""
+    """Everything the planner decided for one question.
+
+    predicted_sources: the sources the planner was told (or predicted) the
+    question needs. CostPlanner uses question.required_sources; routers that
+    predict sources replace it with their prediction.
+    planning_overhead_ms: all time spent deciding, including probes and any
+    source prediction.
+    """
 
     qid: str
     chosen: ScoredPlan
@@ -42,6 +49,7 @@ class PlanDecision:
     probes: Probes
     order: OrderDecision | None
     planning_overhead_ms: float
+    predicted_sources: frozenset[str] = frozenset()
 
     @property
     def plan(self) -> Plan:
@@ -101,6 +109,7 @@ class CostPlanner:
             probes=probes,
             order=order,
             planning_overhead_ms=(time.perf_counter() - start) * 1000.0,
+            predicted_sources=question.required_sources,
         )
 
     def _order(self, question: QuestionSpec, probes: Probes) -> OrderDecision | None:
