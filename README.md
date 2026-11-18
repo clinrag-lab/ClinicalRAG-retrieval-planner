@@ -8,13 +8,14 @@ Cost-aware retrieval planning for clinical retrieval-augmented generation (RAG) 
 src/clinrag/
   config.py        load settings from a YAML config
   question.py      QuestionSpec: a question and the inputs each source needs
-  sources/         source interfaces (base.py), token counting, and implementations
+  sources/         source interfaces (base.py), token counting, ICD graph, and reference
+                   DuckDB / TF-IDF sources over the demo (reference.py)
   planner/         probes, plan enumeration, cost model, order rule, executor,
                    routers (oracle, rules, classifier), source classifier, fallback
   workload/        synthetic notes, question templates, workload builder, paraphrases
-  baselines/       baseline retrieval strategies
-  eval/            metrics and experiment runners
-  llm/             local LLM answer generation
+  baselines/       fixed-order baselines: query_all, always filter-first / search-first
+  eval/            metrics, experiment runner, calibration, analyses and figures
+  llm/             answer step slot (Answerer protocol, NullAnswerer)
 tests/
   fixtures/        tiny fake dataset with MIMIC-IV column names
   conftest.py      loads fixtures into an in-memory DuckDB
@@ -22,6 +23,7 @@ tests/
 docs/
   planner.md       planner design: cost formula, order rule, candidate plans,
                    routing, source classifier, evidence check and fallback
+  experiments.md   experiment runner, calibration, analyses and figures
 scripts/
   download_demo.sh fetch the open-access MIMIC-IV demo
   sol/             Slurm job scripts for ASU Sol
@@ -84,6 +86,18 @@ probabilities are in `CONCEPT_PROBS` in `workload/notes_gen.py`. Diagnosis
 categories are in `workload/icd_categories.py` as a two-level hierarchy (4
 chapters, 9 blocks), and `sources/icd_graph.py` expands either level into the
 version-qualified codes present in the data (`"10:I509"`, `"9:4280"`).
+
+## Running experiments
+
+On the demo with the reference sources (see `docs/experiments.md`):
+
+```bash
+python -m clinrag.eval.calibrate --sources reference --workload data/workload --split dev
+python -m clinrag.eval.runner --sources reference --workload data/workload --split dev \
+    --config outputs/calibrated_config.yaml
+```
+
+Results, analyses and figures are written to `outputs/runs/<timestamp>/`.
 
 ## Running tests
 
