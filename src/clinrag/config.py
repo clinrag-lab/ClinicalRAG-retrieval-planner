@@ -27,7 +27,9 @@ class PlannerConfig:
     avg_tokens_per_chunk: float = 256.0  # tokens per note chunk
     relational_ms: float = 20.0  # latency of one relational query
     graph_ms: float = 1.0  # latency of one graph expansion
-    note_search_ms_per_1k_candidates: float = 10.0  # note search latency per 1000 candidates
+    note_scan_ms_per_1k_notes: float = 0.5  # scoring notes in the vector index
+    note_fetch_ms_per_1k_candidates: float = 2.0  # pulling candidates out and post-filtering them
+    id_filter_ms_per_1k_ids: float = 1.0  # building and applying an admission id filter
 
     def __post_init__(self) -> None:
         for f in fields(self):

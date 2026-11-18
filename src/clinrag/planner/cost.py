@@ -84,34 +84,60 @@ def relational_step_cost(step: RelationalFilter, probes: Probes, config: Planner
 
 
 def note_step_cost(step: NoteSearch, probes: Probes, config: PlannerConfig) -> ProbeEstimate:
-    """Note search. Latency scales with the number of candidates scored.
+    """Note search over a flat vector index.
 
-    candidates:
-      unfiltered    min(k, total_notes)            index returns the top k
-      filter_first  matching_notes                 restricted search scores every matching note
-      search_first  min(ceil(k * total / matching), total)   (total if matching = 0)
-    latency = note_search_ms_per_1k_candidates * candidates / 1000
-    rows    = min(k, total_notes) for unfiltered, min(k, matching_notes) otherwise
-    tokens  = rows * avg_tokens_per_chunk
+    A flat index scores every note it searches, so unfiltered and search-first
+    queries pay for all notes regardless of k; filter-first scores only the
+    matching notes but pays to build and apply the admission id filter.
+
+    scan(n)      = note_scan_ms_per_1k_notes * n / 1000
+    fetch(n)     = note_fetch_ms_per_1k_candidates * n / 1000
+    id_filter(n) = id_filter_ms_per_1k_ids * n / 1000
+
+    latency:
+      unfiltered    scan(total_notes) + fetch(k)
+      search_first  scan(total_notes) + fetch(min(ceil(k * total_notes / matching_notes), total_notes))
+                    (fetch(total_notes) when matching_notes = 0)
+      filter_first  id_filter(matching_admissions) + scan(matching_notes) + fetch(k)
+    rows   = min(k, total_notes) for unfiltered, min(k, matching_notes) otherwise
+    tokens = rows * avg_tokens_per_chunk
     """
     k = config.top_k
     total = _need(probes.total_notes, "total_notes")
+    filter_ids = 0
     if step.mode == "unfiltered":
-        candidates = min(k, total)
+        scanned, fetched = total, k
         rows = min(k, total)
     else:
         matching = _need(probes.matching_notes, "matching_notes")
         if step.mode == "filter_first":
-            candidates = matching
+            filter_ids = _need(probes.matching_admissions, "matching_admissions")
+            scanned, fetched = matching, k
         else:
-            candidates = candidates_to_fetch(k, total, matching)
+            scanned, fetched = total, candidates_to_fetch(k, total, matching)
         rows = min(k, matching)
+
+    latency = (
+        _id_filter_ms(filter_ids, config) + _scan_ms(scanned, config) + _fetch_ms(fetched, config)
+    )
     return ProbeEstimate(
         est_rows=rows,
         est_tokens=rows * config.avg_tokens_per_chunk,
-        est_latency_ms=config.note_search_ms_per_1k_candidates * candidates / 1000.0,
-        details={"step": step.label, "candidates": candidates},
+        est_latency_ms=latency,
+        details={"step": step.label, "scanned": scanned, "fetched": fetched, "filter_ids": filter_ids},
     )
+
+
+def _scan_ms(n: int, config: PlannerConfig) -> float:
+    return config.note_scan_ms_per_1k_notes * n / 1000.0
+
+
+def _fetch_ms(n: int, config: PlannerConfig) -> float:
+    return config.note_fetch_ms_per_1k_candidates * n / 1000.0
+
+
+def _id_filter_ms(n: int, config: PlannerConfig) -> float:
+    return config.id_filter_ms_per_1k_ids * n / 1000.0
 
 
 def _need(value: int | None, name: str) -> int:

@@ -2,7 +2,8 @@
 
 Data: 100 admissions with 10 notes each (1000 notes), one creatinine row per
 admission. Config: k=5, alpha=0.1, 10 tokens/row, 200 tokens/chunk,
-relational 20 ms, note search 8 ms per 1000 candidates, max_candidates 100.
+relational 20 ms, graph 2 ms, scan 0.5 ms per 1000 notes, fetch 2 ms per 1000
+candidates, id filter 1 ms per 1000 ids, max_candidates 100.
 """
 
 import pytest
@@ -21,7 +22,9 @@ CONFIG = PlannerConfig(
     avg_tokens_per_chunk=200,
     relational_ms=20,
     graph_ms=2,
-    note_search_ms_per_1k_candidates=8,
+    note_scan_ms_per_1k_notes=0.5,
+    note_fetch_ms_per_1k_candidates=2.0,
+    id_filter_ms_per_1k_ids=1.0,
     max_candidates=100,
 )
 HIGH_CREATININE = StructuredFilter(CREATININE, ">", 2.0)
@@ -58,10 +61,13 @@ def test_selective_filter_picks_filter_first():
     assert decision.order.candidates == 125
     assert costs(decision) == pytest.approx(
         {
-            "relational+notes:filter_first": 20 + 0.32 + 0.1 * 1000,  # 120.32
-            "relational+notes:search_first": 20 + 1.0 + 0.1 * 1000,  # 121.0, pruned
-            "relational+notes:unfiltered": 20 + 0.04 + 0.1 * (40 + 1000),  # 124.04
-            "query_all": 20 + 0.04 + 0.1 * (40 + 1000),  # 124.04
+            # id_filter(4) + scan(40) + fetch(5) = 0.004 + 0.02 + 0.01
+            "relational+notes:filter_first": 20 + 0.034 + 0.1 * 1000,  # 120.034
+            # scan(1000) + fetch(125) = 0.5 + 0.25; pruned by the order rule
+            "relational+notes:search_first": 20 + 0.75 + 0.1 * 1000,  # 120.75
+            # scan(1000) + fetch(5) = 0.51; tokens 4 rows * 10 + 5 chunks * 200
+            "relational+notes:unfiltered": 20 + 0.51 + 0.1 * (40 + 1000),  # 124.51
+            "query_all": 20 + 0.51 + 0.1 * (40 + 1000),  # 124.51
         }
     )
     assert decision.plan.name == "relational+notes:filter_first"
@@ -74,10 +80,37 @@ def test_loose_filter_picks_search_first():
     decision = CostPlanner(make_sources(high=set(range(1, 61))), CONFIG).plan(mixed_question())
 
     assert decision.order.order == "search_first"
-    assert costs(decision)["relational+notes:search_first"] == pytest.approx(20 + 0.072 + 100)  # 120.072
-    assert costs(decision)["relational+notes:filter_first"] == pytest.approx(20 + 4.8 + 100)  # 124.8, pruned
+    # scan(1000) + fetch(9) = 0.5 + 0.018
+    assert costs(decision)["relational+notes:search_first"] == pytest.approx(20 + 0.518 + 100)  # 120.518
     assert decision.plan.name == "relational+notes:search_first"
     assert decision.plan.note_search.n_candidates == 9
+
+
+def test_pruned_order_keeps_its_cost():
+    # Same loose filter. The rule picks search_first (9 candidates <= 100), but on
+    # this small index the cost model prefers filter_first:
+    # id_filter(60) + scan(600) + fetch(5) = 0.06 + 0.3 + 0.01 = 0.37 ms < 0.518 ms.
+    decision = CostPlanner(make_sources(high=set(range(1, 61))), CONFIG).plan(mixed_question())
+
+    pruned = [s for s in decision.candidates if not s.feasible]
+    assert [s.plan.name for s in pruned] == ["relational+notes:filter_first"]
+    assert pruned[0].cost.total == pytest.approx(20 + 0.37 + 100)  # 120.37
+    assert decision.order_costs == pytest.approx({"filter_first": 120.37, "search_first": 120.518})
+    assert decision.order.order == "search_first"
+    assert decision.cost_order == "filter_first"
+
+
+def test_no_order_costs_without_filtered_note_search():
+    question = QuestionSpec(
+        qid="q4",
+        text="Which notes mention dialysis?",
+        qclass="B",
+        note_query="dialysis",
+        required_sources=frozenset({"notes"}),
+    )
+    decision = CostPlanner(make_sources(high=set()), CONFIG).plan(question)
+    assert decision.order_costs == {}
+    assert decision.cost_order is None
 
 
 def test_chosen_is_cheapest_feasible():

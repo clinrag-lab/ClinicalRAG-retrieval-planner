@@ -47,6 +47,26 @@ class PlanDecision:
     def plan(self) -> Plan:
         return self.chosen.plan
 
+    @property
+    def order_costs(self) -> dict[str, float]:
+        """Estimated total cost of each filter-order variant, including the pruned one.
+
+        Example: {"filter_first": 120.0, "search_first": 121.5}. Empty when the
+        question has no filtered note search.
+        """
+        costs: dict[str, float] = {}
+        for scored in self.candidates:
+            search = scored.plan.note_search
+            if search is not None and scored.plan.is_mixed:
+                costs[search.mode] = scored.cost.total
+        return costs
+
+    @property
+    def cost_order(self) -> str | None:
+        """Order the cost model alone would pick, to compare with order.order (the rule's pick)."""
+        costs = self.order_costs
+        return min(costs, key=costs.__getitem__) if costs else None
+
 
 class CostPlanner:
     """Chooses the cheapest plan for a question.

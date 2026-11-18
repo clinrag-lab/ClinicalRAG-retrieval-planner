@@ -31,11 +31,15 @@ max_candidates: 1000
 avg_tokens_per_row: 20
 avg_tokens_per_chunk: 256
 
-# Estimated latency (ms) of one relational query, one graph expansion,
-# and note search per 1000 candidates scored.
+# Estimated latency (ms) of one relational query and one graph expansion.
 relational_ms: 20
 graph_ms: 1
-note_search_ms_per_1k_candidates: 10
+
+# Note search latency (ms): scoring 1000 notes, fetching and post-filtering
+# 1000 candidates, and building and applying a filter over 1000 admission ids.
+note_scan_ms_per_1k_notes: 0.5
+note_fetch_ms_per_1k_candidates: 2.0
+id_filter_ms_per_1k_ids: 1.0
 
 # Where run outputs are written (git-ignored).
 output_dir: outputs/

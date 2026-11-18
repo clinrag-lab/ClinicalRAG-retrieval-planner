@@ -1,8 +1,10 @@
 """Cost estimates checked against hand-computed numbers.
 
 Config: k=5, alpha=0.1, 10 tokens/row, 200 tokens/chunk, relational 20 ms,
-graph 2 ms, note search 8 ms per 1000 candidates.
-Probes: 30 relational rows, 10000 notes, 40 matching notes, 6 graph codes.
+graph 2 ms, scan 0.5 ms per 1000 notes, fetch 2 ms per 1000 candidates,
+id filter 1 ms per 1000 ids.
+Probes: 30 relational rows over 12 admissions, 10000 notes, 40 matching notes,
+6 graph codes.
 """
 
 import pytest
@@ -20,7 +22,9 @@ CONFIG = PlannerConfig(
     avg_tokens_per_chunk=200,
     relational_ms=20,
     graph_ms=2,
-    note_search_ms_per_1k_candidates=8,
+    note_scan_ms_per_1k_notes=0.5,
+    note_fetch_ms_per_1k_candidates=2.0,
+    id_filter_ms_per_1k_ids=1.0,
 )
 PROBES = Probes(
     relational_rows=30,
@@ -32,6 +36,13 @@ PROBES = Probes(
 LAB = StructuredFilter(50912, ">", 2.0)
 ROWS = RelationalFilter(LAB)
 FILTER_ONLY = RelationalFilter(LAB, as_evidence=False)
+FILTER_FIRST = Plan("rn:ff", (FILTER_ONLY, NoteSearch("q", "filter_first")))
+SEARCH_FIRST = Plan("rn:sf", (FILTER_ONLY, NoteSearch("q", "search_first")))
+NOTES_ONLY = Plan("notes_only", (NoteSearch("q"),))
+
+
+def note_latency(plan, probes):
+    return estimate_cost(plan, probes, CONFIG).steps[-1].est_latency_ms
 
 
 def test_relational_only():
@@ -43,38 +54,45 @@ def test_relational_only():
 
 
 def test_notes_only():
-    # 5 candidates -> 8 * 5 / 1000 = 0.04 ms; tokens 5 * 200 = 1000; total 0.04 + 100
-    cost = estimate_cost(Plan("notes_only", (NoteSearch("q"),)), PROBES, CONFIG)
-    assert cost.est_latency_ms == pytest.approx(0.04)
+    # scan(10000) = 5.0, fetch(5) = 0.01 -> 5.01 ms; tokens 5 * 200 = 1000; total 5.01 + 100
+    cost = estimate_cost(NOTES_ONLY, PROBES, CONFIG)
+    assert cost.est_latency_ms == pytest.approx(5.01)
     assert cost.est_tokens == pytest.approx(1000)
-    assert cost.total == pytest.approx(100.04)
+    assert cost.total == pytest.approx(105.01)
 
 
 def test_filter_first():
-    # relational 20 ms, no tokens; 40 candidates -> 0.32 ms; 5 chunks -> 1000 tokens
-    plan = Plan("rn:ff", (FILTER_ONLY, NoteSearch("q", "filter_first")))
-    cost = estimate_cost(plan, PROBES, CONFIG)
-    assert cost.est_latency_ms == pytest.approx(20.32)
+    # relational 20 ms, no tokens
+    # id_filter(12) = 0.012, scan(40) = 0.02, fetch(5) = 0.01 -> 0.042 ms; 5 chunks -> 1000 tokens
+    cost = estimate_cost(FILTER_FIRST, PROBES, CONFIG)
+    assert cost.est_latency_ms == pytest.approx(20.042)
     assert cost.est_tokens == pytest.approx(1000)
-    assert cost.total == pytest.approx(120.32)
-    assert cost.steps[1].details["candidates"] == 40
+    assert cost.total == pytest.approx(120.042)
+    assert cost.steps[1].details == {
+        "step": "notes:filter_first",
+        "scanned": 40,
+        "fetched": 5,
+        "filter_ids": 12,
+    }
 
 
 def test_search_first():
-    # ceil(5 * 10000 / 40) = 1250 candidates -> 10 ms; latency 30; total 30 + 100
-    plan = Plan("rn:sf", (FILTER_ONLY, NoteSearch("q", "search_first")))
-    cost = estimate_cost(plan, PROBES, CONFIG)
-    assert cost.steps[1].details["candidates"] == 1250
-    assert cost.est_latency_ms == pytest.approx(30)
-    assert cost.total == pytest.approx(130)
+    # ceil(5 * 10000 / 40) = 1250 candidates
+    # scan(10000) = 5.0, fetch(1250) = 2.5 -> 7.5 ms; latency 27.5; total 27.5 + 100
+    cost = estimate_cost(SEARCH_FIRST, PROBES, CONFIG)
+    assert cost.steps[1].details["scanned"] == 10_000
+    assert cost.steps[1].details["fetched"] == 1250
+    assert cost.est_latency_ms == pytest.approx(27.5)
+    assert cost.total == pytest.approx(127.5)
 
 
 def test_both_unfiltered():
-    # latency 20 + 0.04; tokens 300 + 1000; total 20.04 + 130
+    # latency 20 + 5.01; tokens 300 + 1000; total 25.01 + 130
     plan = Plan("rn:unf", (ROWS, NoteSearch("q")))
     cost = estimate_cost(plan, PROBES, CONFIG)
+    assert cost.est_latency_ms == pytest.approx(25.01)
     assert cost.est_tokens == pytest.approx(1300)
-    assert cost.total == pytest.approx(150.04)
+    assert cost.total == pytest.approx(155.01)
 
 
 def test_graph_then_relational():
@@ -87,13 +105,42 @@ def test_graph_then_relational():
     assert cost.steps[0].est_tokens == 0
 
 
-def test_search_first_with_no_matches_scans_everything():
-    # 0 matching notes: fetch all 10000 -> 80 ms, keep nothing
-    probes = Probes(relational_rows=0, total_notes=10_000, matching_notes=0)
-    plan = Plan("rn:sf", (FILTER_ONLY, NoteSearch("q", "search_first")))
-    cost = estimate_cost(plan, probes, CONFIG)
-    assert cost.est_latency_ms == pytest.approx(20 + 80)
+def test_search_first_with_no_matches_scans_and_fetches_everything():
+    # 0 matching notes: scan(10000) = 5.0 + fetch(10000) = 20.0; keep nothing
+    probes = Probes(relational_rows=0, matching_admissions=0, total_notes=10_000, matching_notes=0)
+    cost = estimate_cost(SEARCH_FIRST, probes, CONFIG)
+    assert cost.est_latency_ms == pytest.approx(20 + 25)
     assert cost.est_tokens == 0
+
+
+def test_unfiltered_latency_grows_with_total_notes():
+    # scan(1000) + fetch(5) = 0.51 ms vs scan(100000) + fetch(5) = 50.01 ms
+    small = note_latency(NOTES_ONLY, Probes(total_notes=1_000))
+    large = note_latency(NOTES_ONLY, Probes(total_notes=100_000))
+    assert small == pytest.approx(0.51)
+    assert large == pytest.approx(50.01)
+    assert large > small
+
+
+def test_selective_filter_filter_first_is_faster():
+    # 40 of 10000 notes match: filter_first 0.042 ms vs search_first 7.5 ms
+    ff = note_latency(FILTER_FIRST, PROBES)
+    sf = note_latency(SEARCH_FIRST, PROBES)
+    assert ff == pytest.approx(0.042)
+    assert sf == pytest.approx(7.5)
+    assert ff < sf
+
+
+def test_loose_filter_search_first_is_faster():
+    # 9000 of 10000 notes match, over 1800 admissions.
+    # filter_first: id_filter(1800) = 1.8 + scan(9000) = 4.5 + fetch(5) = 0.01 -> 6.31 ms
+    # search_first: ceil(50000 / 9000) = 6; scan(10000) = 5.0 + fetch(6) = 0.012 -> 5.012 ms
+    probes = Probes(relational_rows=1800, matching_admissions=1800, total_notes=10_000, matching_notes=9000)
+    ff = note_latency(FILTER_FIRST, probes)
+    sf = note_latency(SEARCH_FIRST, probes)
+    assert ff == pytest.approx(6.31)
+    assert sf == pytest.approx(5.012)
+    assert sf < ff
 
 
 def test_alpha_weights_tokens():
@@ -104,8 +151,6 @@ def test_alpha_weights_tokens():
 
 def test_missing_probe_raises():
     with pytest.raises(ValueError, match="matching_notes"):
-        estimate_cost(
-            Plan("rn:ff", (FILTER_ONLY, NoteSearch("q", "filter_first"))),
-            Probes(relational_rows=1, total_notes=10),
-            CONFIG,
-        )
+        estimate_cost(FILTER_FIRST, Probes(relational_rows=1, total_notes=10), CONFIG)
+    with pytest.raises(ValueError, match="matching_admissions"):
+        estimate_cost(FILTER_FIRST, Probes(relational_rows=1, total_notes=10, matching_notes=5), CONFIG)
