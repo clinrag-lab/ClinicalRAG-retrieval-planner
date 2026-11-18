@@ -1,0 +1,9 @@
+note_id,subject_id,hadm_id,note_type,note_seq,charttime,text
+10000001-DS-1,10000001,20000001,DS,1,2150-03-06 11:00:00,"Patient presented with substernal chest pain radiating to the left arm. Troponin elevated, diagnosed with NSTEMI. Started on aspirin and heparin. Discharged in stable condition with cardiology follow-up."
+10000001-DS-2,10000001,20000002,DS,2,2151-07-22 16:30:00,"Admitted with end stage renal disease and fluid overload. Tunneled catheter placed and hemodialysis initiated. Will continue outpatient dialysis three times weekly."
+10000002-DS-3,10000002,20000003,DS,3,2148-11-05 10:15:00,"Presented with fever and productive cough. Chest x-ray showed right lower lobe infiltrate. Treated with IV antibiotics for pneumonia and transitioned to oral therapy."
+10000003-DS-4,10000003,20000004,DS,4,2152-01-16 13:45:00,"Admitted with acute kidney injury in the setting of decompensated heart failure. Diuresis adjusted and renal function improved. Discharged on reduced diuretic dose."
+10000003-DS-5,10000003,20000005,DS,5,2152-09-30 12:00:00,"Elective admission for management of paroxysmal atrial fibrillation. Rate control achieved with metoprolol. Anticoagulation started. No complications."
+10000004-DS-6,10000004,20000006,DS,6,2155-05-20 15:10:00,"Observation stay for chest pain. Serial troponins negative and stress test unremarkable. Symptoms attributed to reflux. Discharged on a proton pump inhibitor."
+10000005-DS-7,10000005,20000007,DS,7,2149-02-12 09:40:00,"Chronic kidney disease stage 5 with hyperkalemia and volume overload. Urgent dialysis performed with improvement in potassium. Arranged outpatient dialysis schedule."
+10000005-DS-8,10000005,20000008,DS,8,2149-12-26 14:05:00,"Admitted for community acquired pneumonia. Blood glucose managed with insulin sliding scale. Completed antibiotic course and discharged home."
