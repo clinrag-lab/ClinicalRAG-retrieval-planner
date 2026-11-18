@@ -88,7 +88,7 @@ class FakeNotes(NotesSource):
         self.search_args.append((k, None if hadm_ids is None else tuple(hadm_ids)))
         pool = self.notes if hadm_ids is None else [n for n in self.notes if n.hadm_id in set(hadm_ids)]
         hits = pool[:k]
-        items = [{"hadm_id": n.hadm_id, "note_id": n.note_id, "text": n.text} for n in hits]
+        items = [{"hadm_id": n.hadm_id, "note_id": n.note_id, "text": n.text, "score": n.score} for n in hits]
         return SourceResult(
             ids=sorted({n.hadm_id for n in hits}),
             items=items,

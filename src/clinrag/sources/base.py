@@ -93,7 +93,9 @@ class NotesSource(ABC):
     def search(self, query: str, k: int, hadm_ids: Sequence[int] | None = None) -> SourceResult:
         """Top-k chunks for the query, restricted to hadm_ids when given.
 
-        Items are ordered by similarity, highest first.
+        Items are ordered by similarity, highest first, and carry a "score"
+        (similarity) field next to "hadm_id" and "text"; the evidence check
+        compares it with min_similarity.
         """
 
 
