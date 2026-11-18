@@ -163,3 +163,27 @@ def test_graph_question_uses_expanded_codes():
     assert decision.probes.relational_rows == 2
     assert decision.probes.matching_notes == 20
     assert decision.plan.name == "graph>relational+notes:filter_first"
+
+
+def test_per_admission_filter_only_returns_that_admission():
+    sources = make_sources(high={1, 2, 3})
+    question = QuestionSpec(
+        qid="q5",
+        text="What was the highest creatinine value during admission 2?",
+        qclass="A",
+        relational_filter=StructuredFilter(CREATININE, hadm_id=2),
+        required_sources=frozenset({"relational"}),
+    )
+    decision = CostPlanner(sources, CONFIG).plan(question)
+    result = execute(decision.plan, sources, question, CONFIG)
+    assert decision.probes.relational_rows == 1
+    assert {item["hadm_id"] for item in result.items} == {2}
+
+
+def test_structured_filter_any_value_and_validation():
+    any_value = StructuredFilter(CREATININE)
+    assert any_value.matches(0.1) and not any_value.matches(None)
+    assert StructuredFilter(CREATININE, hadm_id=5).applies_to(5)
+    assert not StructuredFilter(CREATININE, hadm_id=5).applies_to(6)
+    with pytest.raises(ValueError):
+        StructuredFilter(CREATININE, ">")

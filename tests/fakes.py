@@ -31,7 +31,7 @@ class FakeRelational(RelationalSource):
             return [
                 {"hadm_id": h, "text": f"lab itemid {i} value {v}"}
                 for h, i, v in self.labs
-                if i == lab.itemid and lab.matches(v) and (not codes or h in coded)
+                if i == lab.itemid and lab.applies_to(h) and lab.matches(v) and (not codes or h in coded)
             ]
         return [{"hadm_id": h, "text": f"diagnosis {c}"} for h, c in self.diagnoses if c in codes]
 
