@@ -24,8 +24,12 @@ alpha: 1.0
 # Planner cost model. Latencies and token averages are starting guesses;
 # calibrate them on real runs.
 
-# Search-first is only used if it needs at most this many candidates.
-max_candidates: 1000
+# Order rule. Search-first fetches ceil(beta * k * N / f) candidates (N notes in
+# the index, f matching notes) and is used only if that is at most c * N;
+# otherwise filter-first. beta >= 1 corrects for filter and query being
+# correlated. Tune both with python -m clinrag.eval.tune_order.
+c: 0.25
+beta: 1.0
 
 # Average tokens per relational result row and per note chunk.
 avg_tokens_per_row: 20

@@ -22,7 +22,8 @@ class PlannerConfig:
     top_k: int = 5  # evidence items passed to the LLM per note search
     probe_k: int = 20  # scores fetched by the cheap note probe
     alpha: float = 1.0  # token weight in plan cost
-    max_candidates: int = 1000  # cap on search-first candidates
+    c: float = 0.25  # order rule: search-first may fetch at most c * total_notes candidates
+    beta: float = 1.0  # order rule: correlation correction on search-first candidates
     avg_tokens_per_row: float = 20.0  # tokens per relational result row
     avg_tokens_per_chunk: float = 256.0  # tokens per note chunk
     relational_ms: float = 20.0  # latency of one relational query
@@ -38,8 +39,10 @@ class PlannerConfig:
         for f in fields(self):
             if getattr(self, f.name) < 0:
                 raise ValueError(f"{f.name} must be non-negative")
-        if self.top_k < 1 or self.probe_k < 1 or self.max_candidates < 1:
-            raise ValueError("top_k, probe_k and max_candidates must be at least 1")
+        if self.top_k < 1 or self.probe_k < 1:
+            raise ValueError("top_k and probe_k must be at least 1")
+        if self.c <= 0 or self.beta <= 0:
+            raise ValueError("c and beta must be positive")
 
 
 _PLANNER_KEYS = {f.name: f.type for f in fields(PlannerConfig)}
@@ -107,3 +110,14 @@ def load_planner_config(path: str | Path) -> PlannerConfig:
     if unknown:
         raise ValueError(f"Unknown config keys: {sorted(unknown)}")
     return PlannerConfig(**{k: _CASTS[str(_PLANNER_KEYS[k])](v) for k, v in raw.items() if k in _PLANNER_KEYS})
+
+
+def save_planner_config(config: PlannerConfig, path: str | Path, header: str = "") -> Path:
+    """Write every planner key as flat YAML (readable by load_planner_config)."""
+    from dataclasses import asdict
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    comment = "".join(f"# {line}\n" for line in header.splitlines())
+    path.write_text(comment + yaml.safe_dump(asdict(config), sort_keys=False), encoding="utf-8")
+    return path

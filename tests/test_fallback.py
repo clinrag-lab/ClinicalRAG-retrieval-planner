@@ -2,7 +2,7 @@
 
 Same data and config as test_planner: 100 admissions x 10 notes; note scores
 fall with admission id (admission 1 ~ 1.0, admission 100 ~ 0.0); one creatinine
-row per admission; max_candidates 100. min_similarity 0.3, min_surviving_notes 1.
+row per admission; c 0.1 (at most 100 search-first candidates). min_similarity 0.3, min_surviving_notes 1.
 """
 
 from dataclasses import replace

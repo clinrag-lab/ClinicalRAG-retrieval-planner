@@ -1,7 +1,7 @@
 """Routers on the fake sources: oracle, keyword rules (P1) and classifier + cost planner (P2).
 
 Same data and config as test_planner: 100 admissions x 10 notes, one creatinine
-row per admission, max_candidates 100.
+row per admission, c 0.1 (at most 100 search-first candidates).
 """
 
 import pytest

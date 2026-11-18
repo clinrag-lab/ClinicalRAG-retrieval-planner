@@ -6,8 +6,9 @@ cost_model_check  every candidate plan of every question executed once; Spearman
                   estimated-cheapest plan is the measured-cheapest.
 order_check       (RQ2) every class C and D question run both filter_first and
                   search_first; which was faster (median of repeats), the recall of
-                  each, and how often the order rule's pick and the cost model's
-                  pick match the faster order, binned by selectivity.
+                  each, which was better (higher recall, ties to lower latency), and
+                  how often the order rule's pick and the cost model's pick match the
+                  faster and the better order, binned by selectivity.
 overhead_share    planning_overhead_ms / (planning_overhead_ms + retrieval latency)
                   per router, from the runner's records.
 tau_sweep         P2 TF-IDF at tau = 0.1 .. 0.9: missed-source rate (a needed source
@@ -36,6 +37,7 @@ from clinrag.eval.metrics import retrieval_score
 from clinrag.planner.classifier import SourceClassifier
 from clinrag.planner.execute import execute
 from clinrag.planner.fallback import run_with_fallback
+from clinrag.planner.order import switch_matching_notes
 from clinrag.planner.planner import CostPlanner, PlanDecision, ScoredPlan
 from clinrag.planner.router import ClassifierCostRouter
 from clinrag.sources.base import Sources
@@ -128,6 +130,11 @@ def _variant(decision: PlanDecision, mode: str) -> ScoredPlan | None:
     return None
 
 
+def better_order(measured: dict[str, dict[str, float]]) -> str:
+    """The order with higher recall; ties go to the lower latency (then filter_first)."""
+    return min(measured, key=lambda m: (-measured[m]["recall"], measured[m]["latency_ms"], m))
+
+
 def order_check(
     questions: Sequence[WorkloadQuestion], sources: Sources, config: PlannerConfig, repeats: int = 3
 ) -> list[dict[str, Any]]:
@@ -151,6 +158,7 @@ def order_check(
                 "est_cost": scored.cost.total if scored.cost else None,
             }
         faster = min(measured, key=lambda m: measured[m]["latency_ms"])
+        better = better_order(measured)
         rows.append({
             "qid": q.spec.qid,
             "qclass": q.spec.qclass,
@@ -162,10 +170,13 @@ def order_check(
             "filter_first_recall": measured["filter_first"]["recall"],
             "search_first_recall": measured["search_first"]["recall"],
             "faster": faster,
+            "better": better,
             "rule_pick": decision.order.order,
             "cost_pick": decision.cost_order,
             "rule_matches_faster": decision.order.order == faster,
             "cost_matches_faster": decision.cost_order == faster,
+            "rule_matches_better": decision.order.order == better,
+            "cost_matches_better": decision.cost_order == better,
         })
     return rows
 
@@ -182,8 +193,11 @@ def order_table(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
             "selectivity": label,
             "n": len(group),
             "filter_first_faster": round(sum(r["faster"] == "filter_first" for r in group) / len(group), 3),
+            "filter_first_better": round(sum(r["better"] == "filter_first" for r in group) / len(group), 3),
             "rule_matches_faster": round(sum(r["rule_matches_faster"] for r in group) / len(group), 3),
             "cost_matches_faster": round(sum(r["cost_matches_faster"] for r in group) / len(group), 3),
+            "rule_matches_better": round(sum(r["rule_matches_better"] for r in group) / len(group), 3),
+            "cost_matches_better": round(sum(r["cost_matches_better"] for r in group) / len(group), 3),
             "rule_picks_filter_first": round(sum(r["rule_pick"] == "filter_first" for r in group) / len(group), 3),
             "mean_filter_first_ms": round(float(np.mean([r["filter_first_ms"] for r in group])), 3),
             "mean_search_first_ms": round(float(np.mean([r["search_first_ms"] for r in group])), 3),
@@ -303,8 +317,9 @@ def fig_order_vs_selectivity(rows: Sequence[dict[str, Any]], config: PlannerConf
     xs = [r["selectivity"] for r in rows]
     ax.scatter(xs, [r["filter_first_ms"] for r in rows], label="filter_first", marker="o", alpha=0.7)
     ax.scatter(xs, [r["search_first_ms"] for r in rows], label="search_first", marker="^", alpha=0.7)
-    switch = config.top_k / config.max_candidates
-    ax.axvline(switch, color="gray", linestyle="--", label=f"rule switch (k / max_candidates = {switch:.3g})")
+    total = statistics.median(r["total_notes"] for r in rows)
+    switch = switch_matching_notes(config.top_k, config.c, config.beta) / total
+    ax.axvline(switch, color="gray", linestyle="--", label=f"rule switch (beta k / (c N) = {switch:.3g})")
     n_ff = sum(r["faster"] == "filter_first" for r in rows)
     ax.set_xlabel("Filter selectivity (fraction of admissions passing the filter)")
     ax.set_ylabel("Measured retrieval latency (ms, median of repeats)")

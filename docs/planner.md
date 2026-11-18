@@ -46,7 +46,7 @@ Note-search latency, with `scan(n) = note_scan_ms_per_1k_notes * n / 1000`,
 | mode | latency |
 |---|---|
 | unfiltered | `scan(total_notes) + fetch(k)` |
-| search_first | `scan(total_notes) + fetch(min(ceil(k * total_notes / matching_notes), total_notes))` |
+| search_first | `scan(total_notes) + fetch(min(ceil(beta * k * total_notes / matching_notes), total_notes))` |
 | filter_first | `id_filter(matching_admissions) + scan(matching_notes) + fetch(k)` |
 | unfiltered, per-admission question (`note_hadm_id` set) | `id_filter(1) + scan(scoped_notes) + fetch(k)` |
 
@@ -66,11 +66,37 @@ starting guesses to be calibrated on real runs.
 ## Filter-order rule
 
 When a structured filter restricts a note search, search-first needs about
-`k * total_notes / matching_notes` candidates to keep k notes after filtering.
+`k * N / f` unfiltered candidates to keep k notes after filtering, where
+`N = total_notes` and `f = matching_notes`. That holds only if the matching
+notes are spread evenly through the ranking. If the filter and the query are
+correlated, relevant notes cluster outside the cohort and more candidates are
+needed, so the rule scales the count by `beta`:
 
-- `matching_notes == 0` -> filter_first
-- candidates `> max_candidates` -> filter_first
+```
+candidates = ceil(beta * k * N / f)
+```
+
+- `f == 0` -> filter_first
+- candidates `> c * N` -> filter_first
 - otherwise -> search_first (the exact boundary counts as search_first)
+
+The limit is relative to the index size: search-first may fetch at most a
+fraction `c` of the index. Equivalently, it switches to search_first once
+`f >= beta * k / c` matching notes exist. The executor's search-first step
+fetches the same beta-corrected count, which the planner fills into the plan.
+
+`c` and `beta` are `PlannerConfig` keys (defaults 0.25 and 1.0).
+`python -m clinrag.eval.tune_order --split dev` grid-searches them on class C
+and D dev questions:
+
+- grid: `c` in {0.02, 0.05, 0.1, 0.25, 0.5, 1.0}, `beta` in {1, 1.5, 2, 3};
+- for each question, the better order is the one with higher recall, ties
+  broken by lower measured latency;
+- the winner maximizes the share of questions where the rule picks the better
+  order, ties broken by the picked orders' mean recall, then mean latency.
+
+The tuned values are written into `outputs/calibrated_config.yaml`, with the
+full grid in `outputs/tune_order_report.md`. The test split is never used.
 
 The planner applies this rule (`planner/order.py`) to each mixed plan family and
 prunes the variant it rules out. The pruned plan stays in `PlanDecision.candidates`

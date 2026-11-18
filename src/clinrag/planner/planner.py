@@ -129,7 +129,8 @@ class CostPlanner:
             k=self.config.top_k,
             total_notes=probes.total_notes,
             matching_notes=probes.matching_notes,
-            max_candidates=self.config.max_candidates,
+            c=self.config.c,
+            beta=self.config.beta,
         )
 
     def _fill_candidates(self, plan: Plan, probes: Probes) -> Plan:
@@ -137,7 +138,7 @@ class CostPlanner:
         if search is None or search.mode != "search_first":
             return plan
         assert probes.total_notes is not None and probes.matching_notes is not None
-        n = candidates_to_fetch(self.config.top_k, probes.total_notes, probes.matching_notes)
+        n = candidates_to_fetch(self.config.top_k, probes.total_notes, probes.matching_notes, self.config.beta)
         return plan.with_candidates(n)
 
     @staticmethod
@@ -145,4 +146,4 @@ class CostPlanner:
         search = plan.note_search
         if order is None or search is None or not plan.is_mixed or search.mode == order.order:
             return None
-        return f"order rule chose {order.order} (search-first candidates {order.candidates}, max {order.max_candidates})"
+        return f"order rule chose {order.order} (search-first candidates {order.candidates}, limit c * N = {order.limit:g})"

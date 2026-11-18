@@ -98,7 +98,7 @@ def note_step_cost(step: NoteSearch, probes: Probes, config: PlannerConfig) -> P
       unfiltered    scan(total_notes) + fetch(k)
       unfiltered, scoped to one admission (question.note_hadm_id; probes.scoped_notes set)
                     id_filter(1) + scan(scoped_notes) + fetch(k)
-      search_first  scan(total_notes) + fetch(min(ceil(k * total_notes / matching_notes), total_notes))
+      search_first  scan(total_notes) + fetch(min(ceil(beta * k * total_notes / matching_notes), total_notes))
                     (fetch(total_notes) when matching_notes = 0)
       filter_first  id_filter(matching_admissions) + scan(matching_notes) + fetch(k)
     rows   = min(k, total_notes) for unfiltered (min(k, scoped_notes) when scoped),
@@ -122,7 +122,7 @@ def note_step_cost(step: NoteSearch, probes: Probes, config: PlannerConfig) -> P
             filter_ids = _need(probes.matching_admissions, "matching_admissions")
             scanned, fetched = matching, k
         else:
-            scanned, fetched = total, candidates_to_fetch(k, total, matching)
+            scanned, fetched = total, candidates_to_fetch(k, total, matching, config.beta)
         rows = min(k, matching)
 
     latency = (

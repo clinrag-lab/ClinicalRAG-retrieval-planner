@@ -1,6 +1,6 @@
 """Analyses on the fake sources, with measured latencies planted so the outcome is hand-computable.
 
-Data and config as in test_planner: 100 admissions x 10 notes, k=5, max_candidates 100.
+Data and config as in test_planner: 100 admissions x 10 notes, k=5, c=0.1 (at most 100 search-first candidates).
 Creatinine is high on admissions 1-4 (40 notes: the rule picks filter_first, and
 the cost model agrees: 120.034 vs 120.75). Potassium is high on 1-60 (600 notes:
 the rule picks search_first; the cost model prefers filter_first, 120.37 vs 120.518).
@@ -71,6 +71,8 @@ def test_order_check_hand_computed(planted):
     assert tight["matching_notes"] == 40
     # Both orders keep the 5 best notes, all from admission 1: recall 1 / min(5, 2).
     assert tight["filter_first_recall"] == tight["search_first_recall"] == 0.5
+    # Equal recall: the better order is the faster one.
+    assert tight["better"] == "filter_first" and tight["rule_matches_better"]
 
     loose = rows["loose"]
     assert (loose["faster"], loose["rule_pick"], loose["cost_pick"]) == ("search_first", "search_first", "filter_first")
