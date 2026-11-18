@@ -11,7 +11,7 @@ src/clinrag/
   sources/         source interfaces (base.py), token counting, and implementations
   planner/         probes, plan enumeration, cost model, order rule, executor,
                    routers (oracle, rules, classifier), source classifier, fallback
-  workload/        synthetic notes, question templates and workload builder
+  workload/        synthetic notes, question templates, workload builder, paraphrases
   baselines/       baseline retrieval strategies
   eval/            metrics and experiment runners
   llm/             local LLM answer generation
