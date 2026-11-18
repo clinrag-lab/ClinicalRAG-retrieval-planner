@@ -218,3 +218,44 @@ def test_rule_planner_falls_back_to_query_all():
     assert run.executed_plans == ("relational_only", "query_all")
     assert run.sources_queried == {"relational", "notes"}
     assert run.ok
+
+
+# ---- empty results that answer a predicate ---------------------------------------------
+
+
+def relational_question(flt):
+    return QuestionSpec(qid="a", text="a", qclass="A", relational_filter=flt, required_sources=frozenset({"relational"}))
+
+
+def test_empty_result_answers_a_predicate_question():
+    # "Was creatinine ever above 2 in admission 5?" with no high value: no rows is the answer "no".
+    from clinrag.question import StructuredFilter
+    from tests.fakes import CREATININE
+
+    sources = make_sources(high=set())
+    question = relational_question(StructuredFilter(CREATININE, ">", 2.0, hadm_id=5))
+    decision = OracleCostRouter(sources, FALLBACK_CONFIG).decide(question)
+    run = run_with_fallback(decision, sources, question, FALLBACK_CONFIG)
+    assert run.executed_plans == ("relational_only",)
+    assert run.ok and run.attempts[0].reason == "empty result answers the predicate"
+    assert run.items == [] and "search" not in sources.notes.calls
+
+
+def test_empty_result_still_fails_without_a_predicate():
+    # "Highest creatinine in admission 500?" needs a value: no rows is missing evidence.
+    from clinrag.question import StructuredFilter
+    from tests.fakes import CREATININE
+
+    sources = make_sources(high=set())
+    question = relational_question(StructuredFilter(CREATININE, hadm_id=500))
+    decision = OracleCostRouter(sources, FALLBACK_CONFIG).decide(question)
+    run = run_with_fallback(decision, sources, question, FALLBACK_CONFIG)
+    assert run.attempts[0].reason == "no evidence items"
+    assert run.executed_plans == ("relational_only", "query_all")
+
+
+def test_empty_predicate_result_with_notes_in_the_question_still_falls_back():
+    # The exemption is only for relational-only questions: a C question with an
+    # empty filtered note search still widens (see test_empty_result_triggers_next_plan).
+    decision, run = oracle_run(high=set())
+    assert run.attempts[0].reason == "no evidence items" and run.fallbacks_used == 1

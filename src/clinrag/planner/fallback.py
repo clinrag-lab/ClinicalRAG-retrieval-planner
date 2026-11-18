@@ -1,7 +1,9 @@
 """Evidence check and fallback: if a plan's evidence looks wrong, run a wider plan.
 
 check_evidence fails a result when
-  - it has no items at all;
+  - it has no items at all, unless it is a relational-only question whose filter
+    is a predicate (op and threshold set): then an empty result is the answer
+    ("was creatinine ever above 2?" -> no rows -> no), not missing evidence;
   - it searched notes but got no notes back, or its best note score is below
     config.min_similarity;
   - its note search was filtered (filter_first, search_first, or scoped to the
@@ -26,15 +28,30 @@ from clinrag.planner.enumerate import QUERY_ALL
 from clinrag.planner.execute import ExecutionResult, execute
 from clinrag.planner.plan import Plan
 from clinrag.planner.planner import PlanDecision, ScoredPlan
-from clinrag.question import NOTES, QuestionSpec
+from clinrag.question import NOTES, RELATIONAL, QuestionSpec
 from clinrag.sources.base import Sources
 
 FILTERED_NOTE_STEPS = frozenset({"notes:filter_first", "notes:search_first"})
 
 
+def empty_answers_predicate(result: ExecutionResult, question: QuestionSpec) -> bool:
+    """True if an empty relational-only result is itself the answer to a predicate question."""
+    flt = question.relational_filter
+    return (
+        question.required_sources == {RELATIONAL}
+        and flt is not None
+        and flt.op is not None
+        and flt.threshold is not None
+        and bool(result.steps)
+        and all(step.source == RELATIONAL for step in result.steps)
+    )
+
+
 def check_evidence(result: ExecutionResult, question: QuestionSpec, config: PlannerConfig) -> tuple[bool, str]:
     """(ok, reason). reason is "ok" when the check passes."""
     if not result.items:
+        if empty_answers_predicate(result, question):
+            return True, "empty result answers the predicate"
         return False, "no evidence items"
 
     note_steps = [s for s in result.steps if s.source == NOTES]
