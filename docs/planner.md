@@ -35,11 +35,16 @@ cost(plan) = est_latency_ms + alpha * est_tokens      (summed over steps)
 
 | step | latency (ms) | tokens |
 |---|---|---|
-| graph expand | `graph_ms` | 0 (codes feed the relational step) |
-| relational | `relational_ms` | `rows * avg_tokens_per_row` if rows are evidence, else 0 |
-| note search | see below | `min(k, available) * avg_tokens_per_chunk` |
+| graph expand | `graph_fixed_ms + graph_ms` | 0 (codes feed the relational step) |
+| relational | `relational_fixed_ms + relational_ms` | `rows * avg_tokens_per_row` if rows are evidence, else 0 |
+| note search | `note_search_fixed_ms` + see below | `min(k, available) * avg_tokens_per_chunk` |
 
-Note-search latency, with `scan(n) = note_scan_ms_per_1k_notes * n / 1000`,
+Each step pays its fixed per-call cost once (`*_fixed_ms`, default 0): DuckDB
+call overhead, or embedding the query for a note search. Calibration fits them
+as regression intercepts, so a plan with more steps pays more fixed cost even
+when each step touches little data.
+
+Note-search latency, on top of `note_search_fixed_ms`, with `scan(n) = note_scan_ms_per_1k_notes * n / 1000`,
 `fetch(n) = note_fetch_ms_per_1k_candidates * n / 1000` and
 `id_filter(n) = id_filter_ms_per_1k_ids * n / 1000`:
 

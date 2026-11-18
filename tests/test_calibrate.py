@@ -3,7 +3,9 @@
 import pytest
 
 from clinrag.config import PlannerConfig, load_planner_config
-from clinrag.eval.calibrate import LineFit, calibrate, write_outputs
+import numpy as np
+
+from clinrag.eval.calibrate import LineFit, calibrate, relational_queries, write_outputs
 from clinrag.question import QuestionSpec, StructuredFilter
 from clinrag.sources.base import RelationalQuery, Sources
 from clinrag.sources.tokens import count_tokens
@@ -11,10 +13,12 @@ from clinrag.workload.schema import WorkloadQuestion
 from tests.fakes import CREATININE, FakeGraph, FakeNotes, FakeRelational, creatinine_labs, grid_notes
 
 # Planted costs, in ms.
-RELATIONAL_MS = 7.0
+RELATIONAL_FIXED_MS = 4.0
+RELATIONAL_MS_PER_ROW = 0.2
 COUNT_MS = 2.0
-GRAPH_MS = 1.5
-SEARCH_BASE_MS = 1.2  # fixed cost per search, not a PlannerConfig constant
+GRAPH_FIXED_MS = 1.0
+GRAPH_MS_PER_CODE = 0.25
+SEARCH_BASE_MS = 1.2  # fixed cost per search: note_search_fixed_ms
 ID_MS_PER_1K = 0.4
 SCAN_MS_PER_1K = 2.5
 FETCH_MS_PER_1K = 30.0
@@ -37,8 +41,9 @@ class TimedRelational(FakeRelational):
         self.clock = clock
 
     def run(self, query):
-        self.clock.add_ms(RELATIONAL_MS)
-        return super().run(query)
+        result = super().run(query)
+        self.clock.add_ms(RELATIONAL_FIXED_MS + RELATIONAL_MS_PER_ROW * len(result.items))
+        return result
 
     def count(self, query):
         self.clock.add_ms(COUNT_MS)
@@ -51,8 +56,9 @@ class TimedGraph(FakeGraph):
         self.clock = clock
 
     def expand(self, category):
-        self.clock.add_ms(GRAPH_MS)
-        return super().expand(category)
+        codes = super().expand(category)
+        self.clock.add_ms(GRAPH_FIXED_MS + GRAPH_MS_PER_CODE * len(codes))
+        return codes
 
 
 class TimedNotes(FakeNotes):
@@ -85,13 +91,14 @@ def setup():
     sources = Sources(
         relational=TimedRelational(clock, creatinine_labs(50, set(range(1, 20))), [(1, "N179"), (2, "N186")]),
         notes=TimedNotes(clock, grid_notes(50, 4)),
-        graph=TimedGraph(clock, {"renal": ["N179", "N186"]}),
+        graph=TimedGraph(clock, {"renal": ["N179", "N186"], "cardiac": ["I10", "I214", "I48", "I50"]}),
     )
     questions = [
         wq("a1", "A", {"relational"}, relational_filter=StructuredFilter(CREATININE, hadm_id=3)),
         wq("c1", "C", {"relational", "notes"}, relational_filter=StructuredFilter(CREATININE, ">", 2.0), note_query="dialysis"),
         wq("c2", "C", {"relational", "notes"}, relational_filter=StructuredFilter(CREATININE, ">", 0.5), note_query="sepsis"),
         wq("d1", "D", {"graph", "relational", "notes"}, category="renal", note_query="insulin"),
+        wq("d2", "D", {"graph", "relational", "notes"}, category="cardiac", note_query="sepsis"),
     ]
     return clock, sources, questions
 
@@ -100,8 +107,13 @@ def test_calibration_recovers_planted_constants():
     clock, sources, questions = setup()
     config, report = calibrate(sources, questions, repeats=3, clock=clock)
 
-    assert config.relational_ms == pytest.approx(RELATIONAL_MS)
-    assert config.graph_ms == pytest.approx(GRAPH_MS)
+    # Fixed costs are the intercepts; relational_ms / graph_ms the median part above them.
+    rows = [len(sources.relational.run(q).items) for q in relational_queries(questions, sources)]
+    assert config.relational_fixed_ms == pytest.approx(RELATIONAL_FIXED_MS)
+    assert config.relational_ms == pytest.approx(RELATIONAL_MS_PER_ROW * np.median(rows))
+    assert config.graph_fixed_ms == pytest.approx(GRAPH_FIXED_MS)
+    assert config.graph_ms == pytest.approx(GRAPH_MS_PER_CODE * np.median([2, 4]))
+    assert config.note_search_fixed_ms == pytest.approx(SEARCH_BASE_MS)
     assert config.id_filter_ms_per_1k_ids == pytest.approx(ID_MS_PER_1K)
     assert config.note_scan_ms_per_1k_notes == pytest.approx(SCAN_MS_PER_1K)
     assert config.note_fetch_ms_per_1k_candidates == pytest.approx(FETCH_MS_PER_1K)

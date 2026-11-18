@@ -5,9 +5,15 @@ Usage:
 
 Measurements (each timed --repeats times; the median is kept):
 
-  relational_ms            median RelationalSource.run over the workload's relational queries
+  relational_fixed_ms      intercept of RelationalSource.run time against rows returned,
+                           over the workload's relational queries
+  relational_ms            median run time minus relational_fixed_ms (the typical
+                           per-query part above the fixed cost)
   avg_tokens_per_row       mean tokens of the rows those queries return
-  graph_ms                 median GraphSource.expand over the workload's categories
+  graph_fixed_ms, graph_ms the same for GraphSource.expand against codes returned,
+                           over the workload's categories
+  note_search_fixed_ms     intercept of the id-filter regression below: a search that
+                           scans and fetches nothing costs only its fixed part
   id_filter_ms_per_1k_ids  slope of search(q, 1, hadm_ids=m ids that match no note) against m
   note_scan_ms_per_1k_notes slope of search(q, 1, hadm_ids=s admissions) against the notes
                            those admissions own, after subtracting the id filter
@@ -18,9 +24,8 @@ Measurements (each timed --repeats times; the median is kept):
                            by balanced accuracy; the evidence check's similarity floor
                            depends on the scoring function, so it is fitted per source
 
-Slopes come from least squares with an intercept. The intercept (fixed cost
-per note search, e.g. embedding the query) has no constant in PlannerConfig;
-the report lists it with R^2 for every fit. Writes outputs/calibrated_config.yaml
+Slopes and intercepts come from least squares; the report lists slope,
+intercept and R^2 for every fit. Intercepts are clipped at 0. Writes outputs/calibrated_config.yaml
 (all planner keys, fitted ones replaced) and outputs/calibration_report.json / .md.
 The runner uses the YAML through --config.
 """
@@ -40,7 +45,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from clinrag.config import PlannerConfig
+from clinrag.config import PlannerConfig, load_planner_config
 from clinrag.question import NOTES, RELATIONAL
 from clinrag.sources.base import RelationalQuery, Sources
 from clinrag.sources.tokens import count_tokens
@@ -165,14 +170,19 @@ def calibrate(
     # Relational: one query each, and the tokens of its rows.
     if sources.relational is not None:
         queries = relational_queries(questions, sources)
-        run_ms, count_ms, row_tokens = [], [], []
+        run_ms, run_rows, count_ms, row_tokens = [], [], [], []
         for query in queries:
             ms, result = _timed(clock, lambda q=query: sources.relational.run(q), repeats)
             run_ms.append(ms)
+            run_rows.append(len(result.items))
             count_ms.append(_timed(clock, lambda q=query: sources.relational.count(q), repeats)[0])
             row_tokens += [count_tokens(item["text"]) for item in result.items]
         if run_ms:
-            updates["relational_ms"] = float(np.median(run_ms))
+            rel_fit = LineFit.fit(run_rows, run_ms)
+            fixed = max(rel_fit.intercept, 0.0)
+            updates["relational_fixed_ms"] = fixed
+            updates["relational_ms"] = max(float(np.median(run_ms)) - fixed, 0.0)
+            report.setdefault("fits", {})["relational_ms_vs_rows"] = asdict(rel_fit)
             report["relational_run_ms"] = _spread(run_ms)
             report["relational_count_ms"] = _spread(count_ms)
         if row_tokens:
@@ -182,9 +192,17 @@ def calibrate(
     # Graph expansion.
     if sources.graph is not None:
         categories = sorted({q.spec.category for q in questions if q.spec.category})
-        graph_ms = [_timed(clock, lambda c=c: sources.graph.expand(c), repeats)[0] for c in categories]
+        graph_ms, graph_codes = [], []
+        for category in categories:
+            ms, codes = _timed(clock, lambda c=category: sources.graph.expand(c), repeats)
+            graph_ms.append(ms)
+            graph_codes.append(len(codes))
         if graph_ms:
-            updates["graph_ms"] = float(np.median(graph_ms))
+            graph_fit = LineFit.fit(graph_codes, graph_ms)
+            fixed = max(graph_fit.intercept, 0.0)
+            updates["graph_fixed_ms"] = fixed
+            updates["graph_ms"] = max(float(np.median(graph_ms)) - fixed, 0.0)
+            report.setdefault("fits", {})["graph_ms_vs_codes"] = asdict(graph_fit)
             report["graph_expand_ms"] = _spread(graph_ms)
 
     # Note search: id filter, scan and fetch.
@@ -225,14 +243,15 @@ def calibrate(
             fetch_y.append(median_over_queries(lambda q, n=n: notes.search(q, n)))
         fetch_fit = LineFit.fit(fetch_x, fetch_y)
 
+        updates["note_search_fixed_ms"] = max(id_fit.intercept, 0.0)
         updates["id_filter_ms_per_1k_ids"] = max(id_fit.slope, 0.0)
         updates["note_scan_ms_per_1k_notes"] = max(scan_fit.slope, 0.0)
         updates["note_fetch_ms_per_1k_candidates"] = max(fetch_fit.slope, 0.0)
-        report["fits"] = {
+        report.setdefault("fits", {}).update({
             "id_filter_ms_vs_1k_ids": asdict(id_fit),
             "scan_ms_vs_1k_notes": asdict(scan_fit),
             "fetch_ms_vs_1k_candidates": asdict(fetch_fit),
-        }
+        })
         report["total_notes"] = total
 
         if concept_tags:
@@ -296,13 +315,18 @@ def main(argv: list[str] | None = None) -> PlannerConfig:
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--no-similarity", action="store_true", help="keep the default min_similarity")
     parser.add_argument("--out", type=Path, default=Path("outputs/calibrated_config.yaml"))
+    parser.add_argument(
+        "--base-config", type=Path, default=None,
+        help="config whose unfitted keys (e.g. tuned c and beta) are kept; default PlannerConfig()",
+    )
     args = parser.parse_args(argv)
 
     sources = build_sources(args.sources, args.tables_dir, args.notes_dir)
     notes_dir = args.notes_dir or (FIXTURE_DIR if args.sources == "fake" else DEMO_NOTES)
     tags = None if args.no_similarity else load_concept_tags(notes_dir)
     questions = read_jsonl(args.workload / f"{args.split}.jsonl")
-    config, report = calibrate(sources, questions, repeats=args.repeats, concept_tags=tags)
+    base = load_planner_config(args.base_config) if args.base_config else PlannerConfig()
+    config, report = calibrate(sources, questions, base=base, repeats=args.repeats, concept_tags=tags)
     _, report_md = write_outputs(config, report, args.out)
     print(report_md.read_text(encoding="utf-8"))
     print(f"config: {args.out}")

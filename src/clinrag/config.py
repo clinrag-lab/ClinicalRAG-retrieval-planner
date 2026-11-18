@@ -31,6 +31,9 @@ class PlannerConfig:
     note_scan_ms_per_1k_notes: float = 0.5  # scoring notes in the vector index
     note_fetch_ms_per_1k_candidates: float = 2.0  # pulling candidates out and post-filtering them
     id_filter_ms_per_1k_ids: float = 1.0  # building and applying an admission id filter
+    relational_fixed_ms: float = 0.0  # fixed cost per relational call, added once per step
+    graph_fixed_ms: float = 0.0  # fixed cost per graph expansion, added once per step
+    note_search_fixed_ms: float = 0.0  # fixed cost per note search (e.g. embedding the query)
     min_similarity: float = 0.3  # evidence check: best note score below this fails
     min_surviving_notes: int = 1  # evidence check: fewer notes after a filter fails
     max_fallbacks: int = 2  # plans run after the first when the evidence check fails

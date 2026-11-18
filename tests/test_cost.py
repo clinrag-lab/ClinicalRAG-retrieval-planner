@@ -154,3 +154,35 @@ def test_missing_probe_raises():
         estimate_cost(FILTER_FIRST, Probes(relational_rows=1, total_notes=10), CONFIG)
     with pytest.raises(ValueError, match="matching_admissions"):
         estimate_cost(FILTER_FIRST, Probes(relational_rows=1, total_notes=10, matching_notes=5), CONFIG)
+
+
+# ---- per-call fixed costs --------------------------------------------------------------
+
+FIXED = PlannerConfig(
+    **{**CONFIG.__dict__, "relational_fixed_ms": 3.0, "graph_fixed_ms": 0.5, "note_search_fixed_ms": 1.5}
+)
+
+
+def test_fixed_costs_default_to_zero():
+    config = PlannerConfig()
+    assert (config.relational_fixed_ms, config.graph_fixed_ms, config.note_search_fixed_ms) == (0.0, 0.0, 0.0)
+
+
+def test_fixed_costs_added_once_per_step():
+    # graph 0.5 + 2; relational 3 + 20; filter_first note search
+    # 1.5 + id_filter(12) 0.012 + scan(40) 0.02 + fetch(5) 0.01 = 1.542
+    plan = Plan("g>rn:ff", (GraphExpand("renal"), RelationalFilter(LAB, use_graph_codes=True, as_evidence=False),
+                            NoteSearch("q", "filter_first")))
+    cost = estimate_cost(plan, PROBES, FIXED)
+    assert [s.est_latency_ms for s in cost.steps] == pytest.approx([2.5, 23.0, 1.542])
+    assert cost.est_latency_ms == pytest.approx(2.5 + 23.0 + 1.542)
+
+
+def test_fixed_note_cost_applies_to_every_search_mode():
+    # Each mode's latency rises by exactly note_search_fixed_ms.
+    for plan in (NOTES_ONLY, FILTER_FIRST, SEARCH_FIRST):
+        plain = estimate_cost(plan, PROBES, CONFIG).steps[-1].est_latency_ms
+        fixed = estimate_cost(plan, PROBES, FIXED).steps[-1].est_latency_ms
+        assert fixed - plain == pytest.approx(1.5)
+    # Tokens are unaffected.
+    assert estimate_cost(NOTES_ONLY, PROBES, FIXED).est_tokens == estimate_cost(NOTES_ONLY, PROBES, CONFIG).est_tokens

@@ -67,17 +67,20 @@ timing is the median of `--repeats`.
 
 | constant | measured as |
 |---|---|
-| `relational_ms` | median `run` over the workload's relational queries |
-| `graph_ms` | median `expand` over its categories |
+| `relational_fixed_ms` | intercept of `run` time against rows returned, over the workload's relational queries |
+| `relational_ms` | median `run` time minus `relational_fixed_ms` |
+| `graph_fixed_ms`, `graph_ms` | the same for `expand` against codes returned, over its categories |
+| `note_search_fixed_ms` | intercept of the id-filter regression: a search that scans and fetches nothing |
 | `id_filter_ms_per_1k_ids` | slope of a search restricted to m ids that match no note, vs m |
 | `note_scan_ms_per_1k_notes` | slope of a search restricted to s admissions, vs their notes (id filter subtracted) |
 | `note_fetch_ms_per_1k_candidates` | slope of an unfiltered search for n results, vs n |
 | `avg_tokens_per_row`, `avg_tokens_per_chunk` | mean tokens of returned rows and note chunks |
 | `min_similarity` | score threshold that best separates notes tagged with the queried concept from the rest (balanced accuracy) |
 
-Slopes are least squares with an intercept. The report lists slope,
-intercept and R^2. The intercept is a fixed cost per search, such as
-vectorizing the query, which has no `PlannerConfig` constant.
+Slopes and intercepts are least squares; the report lists slope, intercept
+and R^2 for each fit. The intercepts become the per-call fixed costs.
+`--base-config` keeps the unfitted keys of an existing config, such as the
+tuned `c` and `beta`.
 
 `min_similarity` is fitted because its right value depends on the scoring
 function. TF-IDF cosine scores here are far below the 0.3 default chosen for

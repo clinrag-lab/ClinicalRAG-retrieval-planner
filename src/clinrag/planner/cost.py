@@ -58,18 +58,19 @@ def _estimate_step(step: Step, probes: Probes, config: PlannerConfig) -> ProbeEs
 def graph_step_cost(probes: Probes, config: PlannerConfig) -> ProbeEstimate:
     """Graph expansion.
 
-    latency = graph_ms
+    latency = graph_fixed_ms + graph_ms
     rows    = graph_codes
     tokens  = 0  (codes feed the relational filter; they are not sent to the LLM)
     """
     rows = _need(probes.graph_codes, "graph_codes")
-    return ProbeEstimate(est_rows=rows, est_tokens=0.0, est_latency_ms=config.graph_ms, details={"step": "graph"})
+    latency = config.graph_fixed_ms + config.graph_ms
+    return ProbeEstimate(est_rows=rows, est_tokens=0.0, est_latency_ms=latency, details={"step": "graph"})
 
 
 def relational_step_cost(step: RelationalFilter, probes: Probes, config: PlannerConfig) -> ProbeEstimate:
     """Relational query.
 
-    latency = relational_ms
+    latency = relational_fixed_ms + relational_ms
     rows    = relational_rows
     tokens  = rows * avg_tokens_per_row if the rows are evidence, else 0
     """
@@ -78,7 +79,7 @@ def relational_step_cost(step: RelationalFilter, probes: Probes, config: Planner
     return ProbeEstimate(
         est_rows=rows,
         est_tokens=tokens,
-        est_latency_ms=config.relational_ms,
+        est_latency_ms=config.relational_fixed_ms + config.relational_ms,
         details={"step": step.label, "as_evidence": step.as_evidence},
     )
 
@@ -94,7 +95,7 @@ def note_step_cost(step: NoteSearch, probes: Probes, config: PlannerConfig) -> P
     fetch(n)     = note_fetch_ms_per_1k_candidates * n / 1000
     id_filter(n) = id_filter_ms_per_1k_ids * n / 1000
 
-    latency:
+    latency = note_search_fixed_ms + one of:
       unfiltered    scan(total_notes) + fetch(k)
       unfiltered, scoped to one admission (question.note_hadm_id; probes.scoped_notes set)
                     id_filter(1) + scan(scoped_notes) + fetch(k)
@@ -126,7 +127,10 @@ def note_step_cost(step: NoteSearch, probes: Probes, config: PlannerConfig) -> P
         rows = min(k, matching)
 
     latency = (
-        _id_filter_ms(filter_ids, config) + _scan_ms(scanned, config) + _fetch_ms(fetched, config)
+        config.note_search_fixed_ms
+        + _id_filter_ms(filter_ids, config)
+        + _scan_ms(scanned, config)
+        + _fetch_ms(fetched, config)
     )
     return ProbeEstimate(
         est_rows=rows,
