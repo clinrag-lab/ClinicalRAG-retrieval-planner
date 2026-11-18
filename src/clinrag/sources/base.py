@@ -39,8 +39,9 @@ class RelationalQuery:
     """Structured query against the hospital tables.
 
     Semantics implementations must follow:
-    - lab set: one result row per lab event matching the filter; if icd_codes is
-      also set, only admissions with at least one of those diagnosis codes.
+    - lab set: one result row per lab event matching the filter (itemid, the
+      comparison if any, and lab.hadm_id if set); if icd_codes is also set,
+      only admissions with at least one of those diagnosis codes.
     - lab unset, icd_codes set: one result row per diagnosis row with one of the codes.
     - neither set: invalid.
     """
