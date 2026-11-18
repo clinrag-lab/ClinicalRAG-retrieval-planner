@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from clinrag.config import PlannerConfig
@@ -19,12 +20,13 @@ from clinrag.sources.base import Sources
 class ScoredPlan:
     """A candidate plan with its estimated cost.
 
+    cost is None for routers without a cost model (RulePlanner).
     pruned_reason is set when the order rule ruled the plan out; pruned plans
     keep their cost for logging but are never chosen.
     """
 
     plan: Plan
-    cost: CostEstimate
+    cost: CostEstimate | None
     pruned_reason: str | None = None
 
     @property
@@ -65,7 +67,7 @@ class PlanDecision:
         costs: dict[str, float] = {}
         for scored in self.candidates:
             search = scored.plan.note_search
-            if search is not None and scored.plan.is_mixed:
+            if search is not None and scored.plan.is_mixed and scored.cost is not None:
                 costs[search.mode] = scored.cost.total
         return costs
 
@@ -74,6 +76,14 @@ class PlanDecision:
         """Order the cost model alone would pick, to compare with order.order (the rule's pick)."""
         costs = self.order_costs
         return min(costs, key=costs.__getitem__) if costs else None
+
+
+def cheapest_feasible(candidates: Sequence[ScoredPlan]) -> ScoredPlan:
+    """Cheapest feasible costed candidate; the earliest one on ties."""
+    costed = [s for s in candidates if s.feasible and s.cost is not None]
+    if not costed:
+        raise ValueError("no feasible costed candidate")
+    return min(costed, key=lambda s: s.cost.total if s.cost is not None else float("inf"))
 
 
 class CostPlanner:
@@ -100,8 +110,7 @@ class CostPlanner:
             cost = estimate_cost(plan, probes, self.config)
             scored.append(ScoredPlan(plan, cost, self._pruned_reason(plan, order)))
 
-        feasible = [s for s in scored if s.feasible]
-        chosen = min(feasible, key=lambda s: s.cost.total)
+        chosen = cheapest_feasible(scored)
         return PlanDecision(
             qid=question.qid,
             chosen=chosen,
