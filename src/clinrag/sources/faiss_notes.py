@@ -10,7 +10,6 @@ from pathlib import Path
 import faiss
 import numpy as np
 import pandas as pd
-from sentence_transformers import SentenceTransformer
 
 from clinrag.sources.base import NotesSource, SourceResult
 from clinrag.sources.tokens import count_tokens
@@ -25,10 +24,16 @@ class FaissNotesSource(NotesSource):
         index_dir: str | Path,
         model_name: str = "BAAI/bge-base-en-v1.5",
         device: str | None = None,
+        encoder=None,
     ):
         # Load the embedding model and the FAISS index that was already built.
         self.index_dir = Path(index_dir)
-        self.model = SentenceTransformer(model_name, device=device)
+
+        if encoder is not None:
+            self.model = encoder
+        else:
+            from sentence_transformers import SentenceTransformer
+            self.model = SentenceTransformer(model_name, device=device)
         self.index = faiss.read_index(str(self.index_dir / "notes.faiss"))
 
         # Load the text chunks and their information.
@@ -92,6 +97,7 @@ class FaissNotesSource(NotesSource):
         chunk_words: int = 180,
         overlap_words: int = 30,
         batch_size: int = 32,
+        encoder=None,
     ) -> "FaissNotesSource":
         """
         Builds the vector database from the generated discharge notes.
@@ -145,7 +151,11 @@ class FaissNotesSource(NotesSource):
             raise ValueError("No usable note chunks found")
 
         # Load BGE and generate embeddings for all of the chunks.
-        model = SentenceTransformer(model_name, device=device)
+        if encoder is not None:
+            model = encoder
+        else:
+            from sentence_transformers import SentenceTransformer
+            model = SentenceTransformer(model_name, device=device)
 
         vectors = model.encode(
             [c["text"] for c in chunks],
@@ -173,7 +183,12 @@ class FaissNotesSource(NotesSource):
             json.dump(chunks, f, ensure_ascii=False)
 
         # Return the source so we can start searching immediately.
-        return cls(dest, model_name=model_name, device=device)
+        return cls(
+            dest,
+            model_name=model_name,
+            device=device,
+            encoder=model,
+        )
 
     def _query(self, query: str) -> np.ndarray:
         """
@@ -287,10 +302,8 @@ class FaissNotesSource(NotesSource):
             positions.sort()
 
             # Get the stored vectors for the selected admissions.
-            candidates = np.stack([
-                self.index.reconstruct(i)
-                for i in positions
-            ])
+            all_vectors = self.index.reconstruct_n(0, self.index.ntotal)
+            candidates = all_vectors[positions]
 
             # Compare the question embedding with the selected chunks.
             similarities = candidates @ vector[0]
