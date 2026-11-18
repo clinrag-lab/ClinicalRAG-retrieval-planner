@@ -1,0 +1,26 @@
+# Local config
+config.yaml
+
+# Data and outputs
+data/
+outputs/
+
+# Data files (fixtures are allowed)
+*.csv
+!tests/fixtures/*.csv
+*.csv.gz
+*.parquet
+*.faiss
+*.npy
+*.pkl
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Slurm logs
+slurm-*.out
