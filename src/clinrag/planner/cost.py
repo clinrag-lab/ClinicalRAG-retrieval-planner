@@ -59,10 +59,10 @@ def graph_step_cost(probes: Probes, config: PlannerConfig) -> ProbeEstimate:
     """Graph expansion.
 
     latency = graph_fixed_ms + graph_ms
-    rows    = graph_codes
+    rows    = graph_codes (0 if not probed)
     tokens  = 0  (codes feed the relational filter; they are not sent to the LLM)
     """
-    rows = _need(probes.graph_codes, "graph_codes")
+    rows = probes.graph_codes or 0
     latency = config.graph_fixed_ms + config.graph_ms
     return ProbeEstimate(est_rows=rows, est_tokens=0.0, est_latency_ms=latency, details={"step": "graph"})
 
@@ -71,16 +71,19 @@ def relational_step_cost(step: RelationalFilter, probes: Probes, config: Planner
     """Relational query.
 
     latency = relational_fixed_ms + relational_ms
-    rows    = relational_rows
+    rows    = relational_rows (0 if not probed: a lower bound)
     tokens  = rows * avg_tokens_per_row if the rows are evidence, else 0
     """
-    rows = _need(probes.relational_rows, "relational_rows")
+    # Questions without an order choice skip the relational count (lazy probes):
+    # their rows are unknown and cost no tokens here, a lower bound.
+    unprobed = probes.relational_rows is None
+    rows = 0 if unprobed else probes.relational_rows
     tokens = rows * config.avg_tokens_per_row if step.as_evidence else 0.0
     return ProbeEstimate(
         est_rows=rows,
         est_tokens=tokens,
         est_latency_ms=config.relational_fixed_ms + config.relational_ms,
-        details={"step": step.label, "as_evidence": step.as_evidence},
+        details={"step": step.label, "as_evidence": step.as_evidence, "unprobed": unprobed},
     )
 
 

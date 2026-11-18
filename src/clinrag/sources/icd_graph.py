@@ -21,6 +21,7 @@ class IcdGraph(GraphSource):
     def __init__(self, codes: Iterable[tuple[str, int]], categories: dict[str, IcdCategory] = CATEGORIES) -> None:
         self.codes = sorted({(str(c).strip().upper(), int(v)) for c, v in codes})
         self.categories = categories
+        self._expanded: dict[str, list[str]] = {}
 
     @classmethod
     def from_connection(cls, con: duckdb.DuckDBPyConnection, table: str = "diagnoses_icd") -> IcdGraph:
@@ -39,7 +40,10 @@ class IcdGraph(GraphSource):
         return [(c, v) for c, v in self.codes if cat.contains(c, v)]
 
     def expand(self, category: str) -> list[str]:
-        return [qualify(c, v) for c, v in self.expand_pairs(category)]
+        """Version-qualified codes in the category. Cached: the hierarchy does not change."""
+        if category not in self._expanded:
+            self._expanded[category] = [qualify(c, v) for c, v in self.expand_pairs(category)]
+        return list(self._expanded[category])
 
     def descendant_count(self, category: str) -> int:
         return len(self.expand_pairs(category))

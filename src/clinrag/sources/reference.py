@@ -118,6 +118,51 @@ class DemoRelationalSource(RelationalSource):
         col = "l.hadm_id" if is_lab else "d.hadm_id"
         return [int(r[0]) for r in self.con.execute(f"SELECT DISTINCT {col} {sql} ORDER BY 1", params).fetchall()]
 
+    # ---- note counts in SQL (optional probes) ----
+
+    def register_notes(self, note_ids: Sequence[str], hadm_ids: Sequence[int]) -> None:
+        """Load the note index's metadata (note_id, hadm_id; never text) as DuckDB tables.
+
+        note_meta has one row per indexed chunk; note_counts has chunks per admission.
+        """
+        frame = pd.DataFrame({"note_id": [str(n) for n in note_ids], "hadm_id": [int(h) for h in hadm_ids]})
+        self.con.register("_note_meta_frame", frame)
+        self.con.execute("CREATE OR REPLACE TABLE note_meta AS SELECT note_id, hadm_id FROM _note_meta_frame")
+        self.con.unregister("_note_meta_frame")
+        self.con.execute(
+            "CREATE OR REPLACE TABLE note_counts AS SELECT hadm_id, count(*) AS n FROM note_meta GROUP BY hadm_id"
+        )
+        self._notes_registered = True
+
+    def _require_notes(self) -> None:
+        if not getattr(self, "_notes_registered", False):
+            raise NotImplementedError("no note metadata registered; call register_notes first")
+
+    def count_notes(self, query: RelationalQuery) -> int:
+        self._require_notes()
+        sql, params, is_lab = self._from_where(query)
+        col = "l.hadm_id" if is_lab else "d.hadm_id"
+        row = self.con.execute(
+            f"SELECT coalesce(sum(c.n), 0) FROM note_counts c WHERE c.hadm_id IN (SELECT {col} {sql})", params
+        ).fetchone()
+        return int(row[0])
+
+    def count_matches(self, query: RelationalQuery) -> tuple[int, int, int]:
+        self._require_notes()
+        sql, params, is_lab = self._from_where(query)
+        col = "l.hadm_id" if is_lab else "d.hadm_id"
+        row = self.con.execute(
+            f"""
+            WITH m AS MATERIALIZED (SELECT {col} AS h {sql}),
+                 a AS (SELECT DISTINCT h FROM m)
+            SELECT (SELECT count(*) FROM m),
+                   (SELECT count(*) FROM a),
+                   (SELECT coalesce(sum(c.n), 0) FROM note_counts c JOIN a ON c.hadm_id = a.h)
+            """,
+            params,
+        ).fetchone()
+        return int(row[0]), int(row[1]), int(row[2])
+
     def run(self, query: RelationalQuery) -> SourceResult:
         sql, params, is_lab = self._from_where(query)
         items: list[dict[str, Any]] = []
@@ -236,4 +281,5 @@ def build_reference_sources(tables_dir: str | Path, notes_dir: str | Path) -> So
     relational = DemoRelationalSource.from_tables(tables_dir)
     graph = IcdGraph.from_connection(relational.con)
     notes = TfidfNotesSource.from_dir(notes_dir)
+    relational.register_notes(notes.note_ids, notes.hadm_ids.tolist())
     return Sources(relational=relational, notes=notes, graph=graph)

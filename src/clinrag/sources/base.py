@@ -73,6 +73,19 @@ class RelationalSource(ABC):
     def run(self, query: RelationalQuery) -> SourceResult:
         """Execute the query and return its rows as evidence items."""
 
+    # Optional probes. Sources that know the note index (e.g. its note_id and
+    # hadm_id metadata loaded as a table) can answer note counts in SQL, without
+    # shipping admission id lists. The defaults raise NotImplementedError and the
+    # planner falls back to matching_ids plus NotesSource.count_notes_for.
+
+    def count_notes(self, query: RelationalQuery) -> int:
+        """Indexed note chunks belonging to admissions that match the query, in one query."""
+        raise NotImplementedError
+
+    def count_matches(self, query: RelationalQuery) -> tuple[int, int, int]:
+        """(rows, distinct admissions, indexed note chunks of those admissions) in one query."""
+        raise NotImplementedError
+
 
 class NotesSource(ABC):
     """Vector search over discharge note chunks (FAISS in the real system)."""

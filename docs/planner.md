@@ -27,6 +27,28 @@ QuestionSpec
  evidence ----- items + measured tokens + per-step latency
 ```
 
+## Probes
+
+Probes are lazy (`planner/probes.py`). Only a question with an order choice,
+a structured filter or category combined with a note search (classes C and
+D), runs the relational and note-count probes and the trial note search:
+
+| probe | how |
+|---|---|
+| graph codes | `GraphSource.expand`; `IcdGraph` caches expansions |
+| rows, admissions, matching notes | `RelationalSource.count_matches` in one SQL query when the source implements it; else `count` + `matching_ids`, with notes from `count_notes` (SQL) or `NotesSource.count_notes_for(ids)` |
+| total notes, trial scores | `NotesSource.total_notes`, `probe_search(note_query, probe_k)` |
+
+`count_notes` and `count_matches` are optional on `RelationalSource`. The
+reference DuckDB source implements them by loading the note index's metadata
+(note_id and hadm_id, never text) as a table.
+
+Other questions have no order to choose. They read only index metadata:
+`total_notes`, plus the one admission's note count for a per-admission
+question. Their plans are still costed with what is known. An unprobed
+relational step costs its latency but no tokens, a lower bound.
+`Probes.ran` records which probes ran.
+
 ## Cost formula
 
 ```

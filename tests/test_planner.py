@@ -176,8 +176,9 @@ def test_per_admission_filter_only_returns_that_admission():
         required_sources=frozenset({"relational"}),
     )
     decision = CostPlanner(sources, CONFIG).plan(question)
+    # No order choice: the relational count is skipped (lazy probes).
+    assert decision.probes.relational_rows is None and sources.relational.calls == []
     result = execute(decision.plan, sources, question, CONFIG)
-    assert decision.probes.relational_rows == 1
     assert {item["hadm_id"] for item in result.items} == {2}
 
 
