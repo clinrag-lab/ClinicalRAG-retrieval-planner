@@ -9,6 +9,13 @@ separately in note_negations and are never tagged.
 
 Usage:
     python -m clinrag.workload.notes_gen --tables-dir data/mimic-iv-demo --out-dir data/generated --seed 0
+    python -m clinrag.workload.notes_gen --tables-dir data/mimic-iv-demo --out-dir data/generated --scale 10
+
+--scale S writes S notes per admission (note_seq 1..S) to <out-dir>/scale_S/.
+Note 1 is the scale-1 note; notes 2..S have independently seeded phrasing but
+mention exactly the same tagged and negated concepts, so every per-admission
+gold answer is unchanged. Scaled notes exist to grow the index for the
+filter-first vs search-first experiments.
 """
 
 from __future__ import annotations
@@ -184,8 +191,16 @@ def admission_triggers(codes: list[tuple[str, int]], lab_max: dict[str, float], 
     return triggers
 
 
-def generate_notes(tables_dir: str | Path, seed: int) -> GeneratedNotes:
-    """One synthetic discharge note per admission, plus concept and negation tables."""
+def generate_notes(tables_dir: str | Path, seed: int, scale: int = 1) -> GeneratedNotes:
+    """scale synthetic discharge notes per admission (default one), plus concept and negation tables.
+
+    With scale 1 the output is the original one-note-per-admission set. With
+    scale S > 1 each admission gets S notes: note 1 is the scale-1 note, notes
+    2..S re-phrase it with their own seeds and the same tagged and negated
+    concepts; note_id is "<subject>-DS-<admission seq>-<s>" and note_seq is s.
+    """
+    if scale < 1:
+        raise ValueError("scale must be at least 1")
     con = connect_tables(
         tables_dir,
         required=("admissions", "patients", "diagnoses_icd", "d_icd_diagnoses", "labevents"),
@@ -200,19 +215,26 @@ def generate_notes(tables_dir: str | Path, seed: int) -> GeneratedNotes:
         note_seq = seq_by_subject[adm["subject_id"]]
         note_id = f"{adm['subject_id']}-DS-{note_seq}"
         text, tagged, negated = _compose_note(adm, data, seed)
-        notes.append(
-            {
-                "note_id": note_id,
-                "subject_id": adm["subject_id"],
-                "hadm_id": adm["hadm_id"],
-                "note_type": "DS",
-                "note_seq": note_seq,
-                "charttime": adm["dischtime"],
-                "text": text,
-            }
-        )
-        concepts += [{"note_id": note_id, "hadm_id": adm["hadm_id"], "concept": c} for c in tagged]
-        negations += [{"note_id": note_id, "hadm_id": adm["hadm_id"], "concept": c} for c in negated]
+        variants = [(note_id, note_seq, text)]
+        if scale > 1:
+            variants = [(f"{note_id}-1", 1, text)]
+            for s in range(2, scale + 1):
+                variant_text, _, _ = _compose_note(adm, data, seed, variant=s, fixed=(tagged, negated))
+                variants.append((f"{note_id}-{s}", s, variant_text))
+        for vid, vseq, vtext in variants:
+            notes.append(
+                {
+                    "note_id": vid,
+                    "subject_id": adm["subject_id"],
+                    "hadm_id": adm["hadm_id"],
+                    "note_type": "DS",
+                    "note_seq": vseq,
+                    "charttime": adm["dischtime"],
+                    "text": vtext,
+                }
+            )
+            concepts += [{"note_id": vid, "hadm_id": adm["hadm_id"], "concept": c} for c in tagged]
+            negations += [{"note_id": vid, "hadm_id": adm["hadm_id"], "concept": c} for c in negated]
 
     columns = ["note_id", "hadm_id", "concept"]
     return GeneratedNotes(
@@ -291,18 +313,62 @@ def _columns(con: duckdb.DuckDBPyConnection, table: str) -> set[str]:
     return {row[0] for row in con.execute(f"DESCRIBE {table}").fetchall()}
 
 
-def _compose_note(adm: dict, data: _AdmissionData, seed: int) -> tuple[str, list[str], list[str]]:
-    """Build one note. Returns (text, tagged concepts, negated concepts)."""
+MAX_VARIANT_ATTEMPTS = 200
+
+
+def _compose_note(
+    adm: dict,
+    data: _AdmissionData,
+    seed: int,
+    variant: int = 1,
+    fixed: tuple[list[str], list[str]] | None = None,
+) -> tuple[str, list[str], list[str]]:
+    """Build one note. Returns (text, tagged concepts, negated concepts).
+
+    With fixed=None the concepts are drawn (the original note). With fixed =
+    (tagged, negated) the note mentions exactly those concepts; its phrasing is
+    seeded by variant, retrying when the sampled data (diagnoses, medications)
+    would mention a concept outside fixed.
+    """
+    if fixed is None:
+        return _compose_drawn(adm, data, random.Random(f"{seed}:{adm['hadm_id']}"))
+    for attempt in range(MAX_VARIANT_ATTEMPTS):
+        rng = random.Random(f"{seed}:{adm['hadm_id']}:v{variant}:{attempt}")
+        result = _compose_fixed(adm, data, rng, set(fixed[0]), list(fixed[1]))
+        if result is not None:
+            return result
+    raise RuntimeError(f"hadm {adm['hadm_id']}: no phrasing of variant {variant} keeps the fixed concepts")
+
+
+def _sections(adm: dict, data: _AdmissionData, rng: random.Random) -> tuple[str, str, str, str, str]:
     hadm = adm["hadm_id"]
-    rng = random.Random(f"{seed}:{hadm}")
+    return (
+        _opening(adm),
+        _course(data.diagnoses.get(hadm, []), rng),
+        _labs_paragraph(data.labs.get(hadm, {}), rng),
+        _medications(data.medications.get(hadm, []), rng),
+        _disposition(adm["discharge_location"]),
+    )
+
+
+def _compose_fixed(
+    adm: dict, data: _AdmissionData, rng: random.Random, tagged: set[str], negated: list[str]
+) -> tuple[str, list[str], list[str]] | None:
+    opening, course, lab_text, meds, disposition = _sections(adm, data, rng)
+    forced = mentioned_concepts(" ".join((opening, course, lab_text, meds, disposition)))
+    if not forced <= tagged:
+        return None
+    clinical = [rng.choice(POSITIVE_PHRASES[c]) for c in CONCEPTS if c in tagged - forced]
+    clinical += [rng.choice(NEGATED_PHRASES[c]) for c in negated]
+    rng.shuffle(clinical)
+    return _assemble(adm["hadm_id"], rng, opening, course, lab_text, meds, disposition, clinical, tagged, negated)
+
+
+def _compose_drawn(adm: dict, data: _AdmissionData, rng: random.Random) -> tuple[str, list[str], list[str]]:
+    hadm = adm["hadm_id"]
     diagnoses = data.diagnoses.get(hadm, [])
     labs = data.labs.get(hadm, {})
-
-    opening = _opening(adm)
-    course = _course(diagnoses, rng)
-    lab_text = _labs_paragraph(labs, rng)
-    meds = _medications(data.medications.get(hadm, []), rng)
-    disposition = _disposition(adm["discharge_location"])
+    opening, course, lab_text, meds, disposition = _sections(adm, data, rng)
 
     # Concepts already mentioned by the data itself (e.g. a "Chest pain" diagnosis
     # title or an insulin prescription) are tagged, never sampled or negated.
@@ -318,7 +384,21 @@ def _compose_note(adm: dict, data: _AdmissionData, seed: int) -> tuple[str, list
     clinical = [rng.choice(POSITIVE_PHRASES[c]) for c in CONCEPTS if c in sampled - forced]
     clinical += [rng.choice(NEGATED_PHRASES[c]) for c in negated]
     rng.shuffle(clinical)
+    return _assemble(hadm, rng, opening, course, lab_text, meds, disposition, clinical, tagged, negated)
 
+
+def _assemble(
+    hadm: int,
+    rng: random.Random,
+    opening: str,
+    course: str,
+    lab_text: str,
+    meds: str,
+    disposition: str,
+    clinical: list[str],
+    tagged: set[str],
+    negated: list[str],
+) -> tuple[str, list[str], list[str]]:
     body = [opening, course, " ".join(clinical), lab_text]
     filler_pool = list(FILLER_SENTENCES)
     rng.shuffle(filler_pool)
@@ -415,10 +495,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--tables-dir", required=True, help="hosp tables folder, or a folder containing hosp/")
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--scale", type=int, default=1, help="notes per admission; > 1 writes to <out-dir>/scale_S/")
     args = parser.parse_args(argv)
 
-    notes = generate_notes(args.tables_dir, args.seed)
-    for path in write_notes(notes, args.out_dir):
+    notes = generate_notes(args.tables_dir, args.seed, args.scale)
+    out_dir = Path(args.out_dir) if args.scale == 1 else Path(args.out_dir) / f"scale_{args.scale}"
+    for path in write_notes(notes, out_dir):
         print(f"wrote {path}")
     words = notes.discharge["text"].str.split().str.len()
     print(f"{len(notes.discharge)} notes, words min {words.min()} median {int(words.median())} max {words.max()}")
