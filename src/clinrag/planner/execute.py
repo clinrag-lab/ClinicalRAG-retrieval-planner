@@ -42,7 +42,11 @@ class ExecutionResult:
 
 
 def execute(plan: Plan, sources: Sources, question: QuestionSpec, config: PlannerConfig) -> ExecutionResult:
-    """Execute plan steps in order, passing ICD codes and admission ids forward."""
+    """Execute plan steps in order, passing ICD codes and admission ids forward.
+
+    If the question sets note_hadm_id, unfiltered note searches are restricted
+    to that admission's notes (hadm_ids=[note_hadm_id]).
+    """
     start = time.perf_counter()
     codes: tuple[str, ...] = ()
     matching_ids: list[int] | None = None
@@ -66,7 +70,7 @@ def execute(plan: Plan, sources: Sources, question: QuestionSpec, config: Planne
                 added = result.items
 
         elif isinstance(step, NoteSearch):
-            added = _run_note_search(step, sources, matching_ids, config.top_k)
+            added = _run_note_search(step, sources, matching_ids, config.top_k, question.note_hadm_id)
             rows = len(added)
 
         else:
@@ -96,11 +100,16 @@ def execute(plan: Plan, sources: Sources, question: QuestionSpec, config: Planne
 
 
 def _run_note_search(
-    step: NoteSearch, sources: Sources, matching_ids: list[int] | None, k: int
+    step: NoteSearch,
+    sources: Sources,
+    matching_ids: list[int] | None,
+    k: int,
+    note_hadm_id: int | None = None,
 ) -> list[dict[str, Any]]:
     notes = sources.require_notes()
     if step.mode == "unfiltered":
-        return notes.search(step.query, k).items
+        scope = None if note_hadm_id is None else [note_hadm_id]
+        return notes.search(step.query, k, hadm_ids=scope).items
 
     if matching_ids is None:
         raise ValueError(f"{step.mode} note search needs ids from an earlier relational step")

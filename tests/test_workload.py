@@ -22,6 +22,7 @@ from clinrag.workload.templates import (
     WorkloadData,
     class_a,
     class_b,
+    class_b_admission,
     class_c,
     class_d,
     gold_is_usable,
@@ -47,14 +48,21 @@ CONCEPT_TAGS = {
     "insulin": [1, 8],
     "fall": [1, 2, 3, 4, 5, 6, 7, 8],  # every admission: too broad, skipped by the builder
 }
+# Negated (untagged) mentions: "dialysis was not required" in 04, "denied chest pain" in 03.
+NEGATION_TAGS = {"dialysis": [4], "chest pain": [3]}
+
+
+def write_tags(path, tags):
+    lines = ["note_id,hadm_id,concept"]
+    for concept, ids in tags.items():
+        lines += [f"n{i},{h(i)},{concept}" for i in ids]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 @pytest.fixture
 def data(tmp_path):
-    lines = ["note_id,hadm_id,concept"]
-    for concept, ids in CONCEPT_TAGS.items():
-        lines += [f"n{i},{h(i)},{concept}" for i in ids]
-    (tmp_path / "note_concepts.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_tags(tmp_path / "note_concepts.csv", CONCEPT_TAGS)
+    write_tags(tmp_path / "note_negations.csv", NEGATION_TAGS)
     return WorkloadData.load(FIXTURES, tmp_path)
 
 
@@ -115,6 +123,35 @@ def test_class_b_gold(data):
     assert gold["chest pain"] == [h(1), h(6)]
 
 
+def test_class_b_list_template_ids(data):
+    assert {q.template_id for q in class_b(data, concepts=["dialysis"])} == {"B_list_dialysis"}
+
+
+def test_class_b_admission_balances_yes_no_and_uses_negations(data):
+    qs = class_b_admission(data, per_concept=4, rng=random.Random(0), concepts=["dialysis"])
+    # yes pool {02, 07} -> 2 yes; 2 no: one negated (04) and one plain from the rest.
+    picks = {(q.gold["hadm_id"], q.gold["answer"], q.gold["negated_mention"]) for q in qs}
+    assert {p for p in picks if p[1] == 1} == {(h(2), 1, False), (h(7), 1, False)}
+    assert (h(4), 0, True) in picks
+    plain_no = [p for p in picks if p[1] == 0 and not p[2]]
+    assert len(plain_no) == 1 and plain_no[0][0] in {h(i) for i in (1, 3, 5, 6, 8)}
+
+    q = next(q for q in qs if q.gold["hadm_id"] == h(4))
+    assert q.spec.text == f"According to the discharge summary for admission {h(4)}, was dialysis performed?"
+    assert q.spec.note_hadm_id == h(4)
+    assert q.spec.required_sources == {"notes"}
+    assert q.spec.note_query == "dialysis"
+    assert q.template_id == "B_admission_dialysis"
+
+
+def test_class_b_admission_tops_up_when_a_pool_is_short(data):
+    # chest pain: yes pool {01, 06}, negated {03}; ask for 6 -> 2 yes (all), 4 no.
+    qs = class_b_admission(data, per_concept=6, rng=random.Random(0), concepts=["chest pain"])
+    answers = [q.gold["answer"] for q in qs]
+    assert answers.count(1) == 2 and answers.count(0) == 4
+    assert sum(q.gold["negated_mention"] for q in qs) == 1
+
+
 def test_thresholds_from_max_distribution():
     maxes = [1.1, 6.4, 0.9, 3.2, 1.0, 0.7, 7.1, 1.6]
     # n = round(target * 8): 0, 0, 1, 2, 3, 4, 6, 7 -> skip the zeros
@@ -166,8 +203,19 @@ def test_build_split_and_sources(data):
     assert len({q.spec.text for q in every}) == len(every)
     # "fall" tags every admission: the B question is too broad and skipped, while
     # C and D questions on fall survive because their filter narrows the gold.
-    assert not any(q.spec.qclass == "B" and q.spec.note_query == "fall" for q in every)
+    assert "B_list_fall" not in {q.template_id for q in every}
     assert any(q.spec.qclass == "D" and q.spec.note_query == "fall" for q in every)
+
+
+def test_build_b_mixes_list_and_admission_templates(data):
+    workload = build_workload(data, seed=0)
+    b = [q for q in workload.dev + workload.test if q.spec.qclass == "B"]
+    assert len(b) <= 100
+    assert any(q.template_id.startswith("B_list_") for q in b)
+    admission = [q for q in b if q.template_id.startswith("B_admission_")]
+    assert admission and all(q.spec.note_hadm_id == q.gold["hadm_id"] for q in admission)
+    counts = workload.summary["b_admission_answers"]
+    assert counts["yes"] + counts["no"] == len(admission)
 
 
 def test_build_caps_each_class(data):

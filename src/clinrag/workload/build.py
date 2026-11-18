@@ -17,12 +17,14 @@ from pathlib import Path
 from typing import Any
 
 from clinrag.workload.labs import LABS
+from clinrag.workload.notes_gen import CONCEPTS
 from clinrag.workload.schema import WorkloadQuestion, write_jsonl
 from clinrag.workload.templates import (
     A_KINDS,
     WorkloadData,
     class_a,
     class_b,
+    class_b_admission,
     class_c,
     class_d,
     gold_is_usable,
@@ -57,9 +59,13 @@ def build_workload(
 ) -> Workload:
     n = data.n_admissions
     a_quota = per_template_quota(max_per_class, len(LABS) * len(A_KINDS))
+    # B: the list questions first, then per-admission yes/no questions fill the rest of the cap.
+    b_list = class_b(data)
+    b_list_kept = sum(gold_is_usable(q, n) for q in b_list)
+    b_per_concept = max(0, (max_per_class - b_list_kept) // len(CONCEPTS))
     candidates = {
         "A": class_a(data, a_quota, random.Random(f"{seed}:A")),
-        "B": class_b(data),
+        "B": b_list + class_b_admission(data, b_per_concept, random.Random(f"{seed}:B")),
         "C": class_c(data),
         "D": class_d(data),
     }
@@ -98,8 +104,12 @@ def build_workload(
         "total": {"dev": len(dev), "test": len(test)},
         "selectivity": {c: spread([q.gold["selectivity"] for q in dev + test if q.spec.qclass == c]) for c in ("C", "D")},
         "gold_fraction": {
-            c: spread([len(q.gold["answer"]) / n for q in dev + test if q.spec.qclass == c]) for c in ("B", "C", "D")
+            c: spread(
+                [len(q.gold["answer"]) / n for q in dev + test if q.spec.qclass == c and isinstance(q.gold["answer"], list)]
+            )
+            for c in ("B", "C", "D")
         },
+        "b_admission_answers": _yes_no_counts([q for q in dev + test if q.template_id.startswith("B_admission_")]),
     }
     return Workload(dev, test, summary)
 
@@ -132,6 +142,14 @@ def spread(values: Sequence[float]) -> dict[str, Any]:
         "p75": round(q[2], 4),
         "max": round(ordered[-1], 4),
         "bins": bins,
+    }
+
+
+def _yes_no_counts(questions: list[WorkloadQuestion]) -> dict[str, int]:
+    return {
+        "yes": sum(q.gold["answer"] == 1 for q in questions),
+        "no": sum(q.gold["answer"] == 0 for q in questions),
+        "no_with_negated_mention": sum(q.gold["answer"] == 0 and q.gold["negated_mention"] for q in questions),
     }
 
 

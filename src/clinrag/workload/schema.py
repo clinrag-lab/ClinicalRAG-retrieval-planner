@@ -44,6 +44,7 @@ def question_to_dict(q: WorkloadQuestion) -> dict[str, Any]:
         else {"itemid": f.itemid, "op": f.op, "threshold": f.threshold, "hadm_id": f.hadm_id},
         "note_query": s.note_query,
         "category": s.category,
+        "note_hadm_id": s.note_hadm_id,
         "required_sources": sorted(s.required_sources),
         "gold": q.gold,
     }
@@ -58,6 +59,7 @@ def question_from_dict(d: dict[str, Any]) -> WorkloadQuestion:
         relational_filter=None if f is None else StructuredFilter(**f),
         note_query=d.get("note_query"),
         category=d.get("category"),
+        note_hadm_id=d.get("note_hadm_id"),
         required_sources=frozenset(d["required_sources"]),
     )
     return WorkloadQuestion(spec, d["gold"])

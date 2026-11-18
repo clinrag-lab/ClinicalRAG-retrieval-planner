@@ -71,6 +71,7 @@ python -m clinrag.workload.build --tables-dir data/mimic-iv-demo --notes-dir dat
 |---|---|---|---|
 | A | relational | most recent / highest creatinine in an admission, was it ever above 2.0 | a number (1/0 for yes/no) |
 | B | notes | which discharge summaries mention dialysis | sorted hadm_ids |
+| B | notes (one admission) | according to the discharge summary for admission X, was dialysis performed | 1 / 0; about half are no, some with a negated mention |
 | C | relational + notes | among admissions with creatinine > T, which mention dialysis | sorted hadm_ids, plus filter selectivity |
 | D | graph + relational + notes | among admissions with any renal diagnosis, which mention dialysis | sorted hadm_ids, plus category selectivity |
 

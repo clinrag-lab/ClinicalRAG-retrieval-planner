@@ -187,3 +187,21 @@ def test_structured_filter_any_value_and_validation():
     assert not StructuredFilter(CREATININE, hadm_id=5).applies_to(6)
     with pytest.raises(ValueError):
         StructuredFilter(CREATININE, ">")
+
+
+def test_per_admission_note_question_plans_notes_only():
+    sources = make_sources(high={1})
+    question = QuestionSpec(
+        qid="q6",
+        text="According to the discharge summary for admission 7, did the patient have sepsis?",
+        qclass="B",
+        note_query="sepsis",
+        note_hadm_id=7,
+        required_sources=frozenset({"notes"}),
+    )
+    decision = CostPlanner(sources, CONFIG).plan(question)
+    result = execute(decision.plan, sources, question, CONFIG)
+
+    assert decision.plan.name == "notes_only"
+    assert {item["hadm_id"] for item in result.items} == {7}
+    assert sources.relational.calls == []

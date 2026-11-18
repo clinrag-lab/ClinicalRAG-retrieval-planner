@@ -69,6 +69,8 @@ class QuestionSpec:
     - "relational" needs a relational_filter or a category.
     - "notes" needs a note_query.
     - A relational_filter is only allowed when "relational" is required.
+    - note_hadm_id restricts the note search to one admission's notes and is
+      only allowed on notes-only questions.
     """
 
     qid: str
@@ -77,6 +79,7 @@ class QuestionSpec:
     relational_filter: StructuredFilter | None = None
     note_query: str | None = None
     category: str | None = None
+    note_hadm_id: int | None = None
     required_sources: frozenset[str]
 
     def __post_init__(self) -> None:
@@ -100,3 +103,5 @@ class QuestionSpec:
             raise ValueError(f"{self.qid}: relational_filter given but 'relational' not required")
         if NOTES in sources and not self.note_query:
             raise ValueError(f"{self.qid}: 'notes' needs a note_query")
+        if self.note_hadm_id is not None and sources != {NOTES}:
+            raise ValueError(f"{self.qid}: note_hadm_id is only for notes-only questions")

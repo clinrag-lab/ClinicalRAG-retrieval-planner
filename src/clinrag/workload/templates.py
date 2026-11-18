@@ -1,11 +1,13 @@
 """Question templates for the four workload classes, with gold answers.
 
 A  relational only     per-admission lab questions (most recent, max, ever above T)
-B  notes only          which discharge summaries mention a concept
+B  notes only          which discharge summaries mention a concept, and
+                       per-admission yes/no: does this admission's summary mention it
 C  filter + notes      among admissions with a lab above T, which summaries mention a concept
 D  graph + notes       among admissions with a diagnosis category, which summaries mention a concept
 
-Gold answers come from SQL over the hosp tables and the note_concepts table.
+Gold answers come from SQL over the hosp tables and the note_concepts and
+note_negations tables.
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ def slug(text: str) -> str:
 
 @dataclass
 class WorkloadData:
-    """Hosp tables plus note_concepts in one DuckDB connection."""
+    """Hosp tables plus note_concepts and note_negations in one DuckDB connection."""
 
     con: duckdb.DuckDBPyConnection
 
@@ -48,7 +50,13 @@ class WorkloadData:
         path = table_path(Path(notes_dir), "note_concepts")
         if path is None:
             raise FileNotFoundError(f"note_concepts.csv(.gz) not found in {notes_dir}")
-        load_csv(con, "note_concepts", path, {"concept": "VARCHAR", "note_id": "VARCHAR"})
+        text_cols = {"concept": "VARCHAR", "note_id": "VARCHAR"}
+        load_csv(con, "note_concepts", path, text_cols)
+        negations = table_path(Path(notes_dir), "note_negations")
+        if negations is not None:
+            load_csv(con, "note_negations", negations, text_cols)
+        else:
+            con.execute("CREATE TABLE note_negations (note_id VARCHAR, hadm_id BIGINT, concept VARCHAR)")
         return cls(con)
 
     def admission_ids(self) -> list[int]:
@@ -65,6 +73,14 @@ class WorkloadData:
     def concept_admissions(self, concept: str) -> set[int]:
         rows = self.con.execute(
             "SELECT DISTINCT n.hadm_id FROM note_concepts n JOIN admissions a USING (hadm_id) WHERE n.concept = ?",
+            [concept],
+        ).fetchall()
+        return {int(r[0]) for r in rows}
+
+    def negated_admissions(self, concept: str) -> set[int]:
+        """Admissions whose note has a negated (untagged) mention of the concept."""
+        rows = self.con.execute(
+            "SELECT DISTINCT n.hadm_id FROM note_negations n JOIN admissions a USING (hadm_id) WHERE n.concept = ?",
             [concept],
         ).fetchall()
         return {int(r[0]) for r in rows}
@@ -159,8 +175,69 @@ def class_b(data: WorkloadData, concepts: Iterable[str] = CONCEPTS) -> list[Work
             note_query=concept,
             required_sources=frozenset({NOTES}),
         )
-        gold = {"answer": sorted(data.concept_admissions(concept)), "template_id": f"B_{slug(concept)}"}
+        gold = {"answer": sorted(data.concept_admissions(concept)), "template_id": f"B_list_{slug(concept)}"}
         questions.append(WorkloadQuestion(spec, gold))
+    return questions
+
+
+# Question wording for the per-admission B template.
+B_ADMISSION_PHRASES: dict[str, str] = {
+    "dialysis": "was dialysis performed",
+    "chest pain": "did the patient have chest pain",
+    "shortness of breath": "did the patient have shortness of breath",
+    "anticoagulation": "was the patient on anticoagulation",
+    "insulin": "was the patient on insulin",
+    "sepsis": "did the patient have sepsis",
+    "fall": "did the patient have a fall",
+    "intubation": "did the patient undergo intubation",
+}
+
+
+def class_b_admission(
+    data: WorkloadData,
+    per_concept: int,
+    rng: random.Random,
+    concepts: Iterable[str] = CONCEPTS,
+) -> list[WorkloadQuestion]:
+    """Yes/no questions about one admission's discharge summary.
+
+    For each concept, about half the picks are tagged notes (gold 1) and half
+    untagged (gold 0). Up to half of the "no" picks come from notes with a
+    negated mention of the concept, so the note contains the term but the
+    answer is still no.
+    """
+    all_ids = set(data.admission_ids())
+    questions = []
+    for concept in concepts:
+        yes_pool = sorted(data.concept_admissions(concept))
+        negated_pool = sorted(data.negated_admissions(concept) - set(yes_pool))
+        plain_pool = sorted(all_ids - set(yes_pool) - set(negated_pool))
+
+        n_yes = min(len(yes_pool), math.ceil(per_concept / 2))
+        n_no = min(per_concept - n_yes, len(negated_pool) + len(plain_pool))
+        n_negated = min(len(negated_pool), math.ceil(n_no / 2))
+        n_plain = min(len(plain_pool), n_no - n_negated)
+        n_negated = min(len(negated_pool), n_no - n_plain)  # top up if plain notes run short
+
+        picks = [(h, 1, False) for h in rng.sample(yes_pool, n_yes)]
+        picks += [(h, 0, True) for h in rng.sample(negated_pool, n_negated)]
+        picks += [(h, 0, False) for h in rng.sample(plain_pool, n_plain)]
+        for hadm_id, answer, negated in sorted(picks):
+            spec = QuestionSpec(
+                qid=_PLACEHOLDER_QID,
+                text=f"According to the discharge summary for admission {hadm_id}, {B_ADMISSION_PHRASES[concept]}?",
+                qclass="B",
+                note_query=concept,
+                note_hadm_id=hadm_id,
+                required_sources=frozenset({NOTES}),
+            )
+            gold = {
+                "answer": answer,
+                "template_id": f"B_admission_{slug(concept)}",
+                "hadm_id": hadm_id,
+                "negated_mention": negated,
+            }
+            questions.append(WorkloadQuestion(spec, gold))
     return questions
 
 
