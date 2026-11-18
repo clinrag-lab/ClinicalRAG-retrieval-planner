@@ -70,7 +70,7 @@ timing is the median of `--repeats`.
 | `relational_fixed_ms` | intercept of `run` time against rows returned, over the workload's relational queries |
 | `relational_ms` | median `run` time minus `relational_fixed_ms` |
 | `graph_fixed_ms`, `graph_ms` | the same for `expand` against codes returned, over its categories |
-| `note_search_fixed_ms` | intercept of the id-filter regression: a search that scans and fetches nothing |
+| `note_search_fixed_ms` | intercept of the scan regression minus fetch(1): the fixed part of a search (embedding or vectorizing the query) |
 | `id_filter_ms_per_1k_ids` | slope of a search restricted to m ids that match no note, vs m |
 | `note_scan_ms_per_1k_notes` | slope of a search restricted to s admissions, vs their notes (id filter subtracted) |
 | `note_fetch_ms_per_1k_candidates` | slope of an unfiltered search for n results, vs n |

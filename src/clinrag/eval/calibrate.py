@@ -12,8 +12,11 @@ Measurements (each timed --repeats times; the median is kept):
   avg_tokens_per_row       mean tokens of the rows those queries return
   graph_fixed_ms, graph_ms the same for GraphSource.expand against codes returned,
                            over the workload's categories
-  note_search_fixed_ms     intercept of the id-filter regression below: a search that
-                           scans and fetches nothing costs only its fixed part
+  note_search_fixed_ms     intercept of the scan regression below minus fetch(1): a
+                           search that scans no notes and fetches one candidate costs
+                           only its fixed part (embedding or vectorizing the query).
+                           Not the id-filter intercept: a source may return before
+                           embedding the query when no admission id matches
   id_filter_ms_per_1k_ids  slope of search(q, 1, hadm_ids=m ids that match no note) against m
   note_scan_ms_per_1k_notes slope of search(q, 1, hadm_ids=s admissions) against the notes
                            those admissions own, after subtracting the id filter
@@ -243,7 +246,8 @@ def calibrate(
             fetch_y.append(median_over_queries(lambda q, n=n: notes.search(q, n)))
         fetch_fit = LineFit.fit(fetch_x, fetch_y)
 
-        updates["note_search_fixed_ms"] = max(id_fit.intercept, 0.0)
+        fetch_one_ms = max(fetch_fit.slope, 0.0) / 1000.0
+        updates["note_search_fixed_ms"] = max(scan_fit.intercept - fetch_one_ms, 0.0)
         updates["id_filter_ms_per_1k_ids"] = max(id_fit.slope, 0.0)
         updates["note_scan_ms_per_1k_notes"] = max(scan_fit.slope, 0.0)
         updates["note_fetch_ms_per_1k_candidates"] = max(fetch_fit.slope, 0.0)
