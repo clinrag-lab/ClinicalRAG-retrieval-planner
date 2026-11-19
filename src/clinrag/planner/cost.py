@@ -105,8 +105,11 @@ def note_step_cost(step: NoteSearch, probes: Probes, config: PlannerConfig) -> P
       search_first  scan(total_notes) + fetch(min(ceil(beta * k * total_notes / matching_notes), total_notes))
                     (fetch(total_notes) when matching_notes = 0)
       filter_first  id_filter(matching_admissions) + scan(matching_notes) + fetch(k)
-    rows   = min(k, total_notes) for unfiltered (min(k, scoped_notes) when scoped),
-             min(k, matching_notes) otherwise
+    rows   = items returned: one note per distinct admission, so min(k, total_notes)
+             for unfiltered, 1 when scoped to one admission, min(k, matching
+             admissions) otherwise
+    fetch(k) is the fetch for k items; over-fetching to reach k distinct
+    admissions is not modelled.
     tokens = rows * avg_tokens_per_chunk
     """
     k = config.top_k
@@ -116,7 +119,7 @@ def note_step_cost(step: NoteSearch, probes: Probes, config: PlannerConfig) -> P
         # The executor restricts unfiltered searches to note_hadm_id: filter_first over one admission.
         filter_ids = 1
         scanned, fetched = probes.scoped_notes, k
-        rows = min(k, probes.scoped_notes)
+        rows = min(1, probes.scoped_notes)  # one admission: its best note
     elif step.mode == "unfiltered":
         scanned, fetched = total, k
         rows = min(k, total)
@@ -127,7 +130,9 @@ def note_step_cost(step: NoteSearch, probes: Probes, config: PlannerConfig) -> P
             scanned, fetched = matching, k
         else:
             scanned, fetched = total, candidates_to_fetch(k, total, matching, config.beta)
-        rows = min(k, matching)
+        # One item per distinct admission (executor), so at most k of the matching admissions.
+        admissions = probes.matching_admissions if probes.matching_admissions is not None else matching
+        rows = min(k, admissions)
 
     latency = (
         config.note_search_fixed_ms

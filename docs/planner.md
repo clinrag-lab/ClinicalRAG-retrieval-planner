@@ -82,6 +82,22 @@ executor restricts the search to `note_hadm_id`), so they are costed as
 filter_first over that admission. The probes collect `scoped_notes` with
 `count_notes_for([note_hadm_id])`.
 
+**Distinct admissions.** Every note search returns the top k distinct
+admissions, one note each (the admission's best-scoring note). Gold answers
+are per admission, so k notes from one admission would waste the evidence
+budget once admissions have several notes or chunks. The executor applies
+this to any `NotesSource`:
+
+- unfiltered, filter_first and per-admission searches over-fetch (k notes,
+  then 4x more) until k distinct admissions are found or the searched notes
+  run out;
+- search_first fetches its candidate count in notes, filters, then keeps one
+  note per admission.
+
+Token estimates count one item per admission: `min(k, total_notes)`
+unfiltered, 1 for a per-admission search, `min(k, matching_admissions)`
+otherwise. Over-fetching is not in the latency model.
+
 A flat vector index scores every note it searches, so unfiltered and
 search-first queries pay for all notes regardless of k, while filter-first
 scores only the matching notes but pays to build and apply the admission id

@@ -82,11 +82,11 @@ def test_low_similarity_triggers_next_plan():
 
 
 def test_too_few_surviving_notes_triggers_next_plan():
-    # Admissions 1-4 match; filter_first keeps k = 5 notes, fewer than the 6 required.
+    # Admissions 1-4 match; filter_first keeps one note per admission (4), fewer than the 6 required.
     config = replace(FALLBACK_CONFIG, min_surviving_notes=6)
     decision, run = oracle_run(high={1, 2, 3, 4}, config=config)
     assert decision.plan.name == "relational+notes:filter_first"
-    assert run.attempts[0].reason == "5 notes survived the filter, need 6"
+    assert run.attempts[0].reason == "4 notes survived the filter, need 6"
     # query_all's note search is unfiltered, so the surviving-notes rule does not apply.
     assert run.executed_plans == ("relational+notes:filter_first", "query_all") and run.ok
 

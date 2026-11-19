@@ -63,9 +63,10 @@ def test_selective_filter_picks_filter_first():
     assert costs(decision) == pytest.approx(
         {
             # id_filter(4) + scan(40) + fetch(5) = 0.004 + 0.02 + 0.01
-            "relational+notes:filter_first": 20 + 0.034 + 0.1 * 1000,  # 120.034
+            # 4 matching admissions: one note each, so 4 * 200 tokens.
+            "relational+notes:filter_first": 20 + 0.034 + 0.1 * 800,  # 100.034
             # scan(1000) + fetch(125) = 0.5 + 0.25; pruned by the order rule
-            "relational+notes:search_first": 20 + 0.75 + 0.1 * 1000,  # 120.75
+            "relational+notes:search_first": 20 + 0.75 + 0.1 * 800,  # 100.75
             # scan(1000) + fetch(5) = 0.51; tokens 4 rows * 10 + 5 chunks * 200
             "relational+notes:unfiltered": 20 + 0.51 + 0.1 * (40 + 1000),  # 124.51
             "query_all": 20 + 0.51 + 0.1 * (40 + 1000),  # 124.51
@@ -213,7 +214,7 @@ def test_per_admission_note_question_costs_one_admission_scan():
     # Admission 7 has 10 of the 1000 notes. The executor only searches those, so
     # the cost is filter_first over one admission:
     # id_filter(1) + scan(10) + fetch(5) = 0.001 + 0.005 + 0.01 = 0.016 ms,
-    # not scan(1000) + fetch(5) = 0.51 ms. Tokens: 5 chunks * 200.
+    # not scan(1000) + fetch(5) = 0.51 ms. Tokens: one admission, so 1 note * 200.
     sources = make_sources(high=set())
     question = QuestionSpec(
         qid="q7",
@@ -230,7 +231,7 @@ def test_per_admission_note_question_costs_one_admission_scan():
     step = decision.chosen.cost.steps[0]
     assert step.est_latency_ms == pytest.approx(0.016)
     assert step.details == {"step": "notes:unfiltered", "scanned": 10, "fetched": 5, "filter_ids": 1}
-    assert costs(decision) == pytest.approx({"notes_only": 0.016 + 0.1 * 1000, "query_all": 0.016 + 0.1 * 1000})
+    assert costs(decision) == pytest.approx({"notes_only": 0.016 + 0.1 * 200, "query_all": 0.016 + 0.1 * 200})
 
 
 def test_unscoped_note_question_has_no_scoped_count():

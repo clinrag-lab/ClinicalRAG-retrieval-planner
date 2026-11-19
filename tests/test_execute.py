@@ -52,10 +52,11 @@ def test_graph_codes_flow_into_relational(sources):
 def test_filter_first_only_searches_matching_admissions(sources, mixed):
     result = execute(plans_by_name(mixed)["relational+notes:filter_first"], sources, mixed, CONFIG)
 
-    assert sources.notes.search_args == [(3, (7, 8, 9))]
+    # The 3 best notes all belong to admission 7, so the executor over-fetches
+    # (3, then 12 notes) to return 3 distinct admissions.
+    assert sources.notes.search_args == [(3, (7, 8, 9)), (12, (7, 8, 9))]
     note_items = [i for i in result.items if i["source"] == "notes"]
-    assert len(note_items) == 3
-    assert {i["hadm_id"] for i in note_items} <= {7, 8, 9}
+    assert [i["note_id"] for i in note_items] == ["7-0", "8-0", "9-0"]
     # Relational rows were only a filter, so they are not evidence.
     assert all(i["source"] == "notes" for i in result.items)
 
@@ -68,7 +69,8 @@ def test_search_first_fetches_candidates_then_filters(sources, mixed):
     assert len(result.items) == 3
     assert {i["hadm_id"] for i in result.items} <= {7, 8, 9}
     # Highest-scoring matching notes: admission 7's first three.
-    assert [i["note_id"] for i in result.items] == ["7-0", "7-1", "7-2"]
+    # One note per admission: the best of 7, 8 and 9.
+    assert [i["note_id"] for i in result.items] == ["7-0", "8-0", "9-0"]
 
 
 def test_search_first_without_candidates_raises(sources, mixed):
@@ -125,7 +127,8 @@ def test_note_hadm_id_scopes_search_to_one_admission(sources):
     )
     result = execute(plans_by_name(q)["notes_only"], sources, q, CONFIG)
 
-    assert sources.notes.search_args == [(3, (5,))]
+    # One admission: its single best note.
+    assert sources.notes.search_args == [(1, (5,))]
     assert {i["hadm_id"] for i in result.items} == {5}
     assert result.sources_queried == {"notes"}
     assert sources.relational.calls == []

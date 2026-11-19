@@ -69,8 +69,8 @@ def test_order_check_hand_computed(planted):
     assert tight["rule_matches_faster"] and tight["cost_matches_faster"]
     assert (tight["filter_first_ms"], tight["search_first_ms"]) == (2.0, 6.0)
     assert tight["matching_notes"] == 40
-    # Both orders keep the 5 best notes, all from admission 1: recall 1 / min(5, 2).
-    assert tight["filter_first_recall"] == tight["search_first_recall"] == 0.5
+    # Both orders keep the best note of admissions 1-4 (distinct admissions): gold {1, 2} fully covered.
+    assert tight["filter_first_recall"] == tight["search_first_recall"] == 1.0
     # Equal recall: the better order is the faster one.
     assert tight["better"] == "filter_first" and tight["rule_matches_better"]
 
