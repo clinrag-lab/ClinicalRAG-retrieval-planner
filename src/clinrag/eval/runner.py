@@ -78,10 +78,41 @@ def build_sources(kind: str, tables_dir: Path | None = None, notes_dir: Path | N
     raise ValueError(f"unknown sources {kind!r}; expected fake or reference")
 
 
-def train_classifier(workload_dir: Path, featurizer: str) -> SourceClassifier:
-    """Fit on the dev split only."""
+P2_TRAIN = ("dev", "dev+paraphrases")
+
+
+def train_classifier(workload_dir: Path, featurizer: str, train: str = "dev", seed: int = 0) -> SourceClassifier:
+    """Fit on the dev split only: the original dev questions, plus (train="dev+paraphrases")
+    the dev questions rendered in the train phrasing families (seed), as in the routing report."""
+    if train not in P2_TRAIN:
+        raise ValueError(f"train must be one of {P2_TRAIN}")
     dev = read_jsonl(workload_dir / "dev.jsonl")
-    return SourceClassifier(featurizer=featurizer).fit([q.spec for q in dev])
+    specs = [q.spec for q in dev]
+    if train == "dev+paraphrases":
+        from clinrag.workload.paraphrase import paraphrase_all, split_families
+
+        specs += [p.question.spec for p in paraphrase_all(dev, split_families(seed)["train"], seed)]
+    return SourceClassifier(featurizer=featurizer).fit(specs)
+
+
+def load_or_train_classifiers(
+    router_names: Sequence[str], workload_dir: Path, train: str, model_dir: Path | None, seed: int = 0
+) -> dict[str, SourceClassifier]:
+    """P2 classifiers by featurizer. With model_dir, reuse <model_dir>/p2_<featurizer>.joblib when present,
+    else train and save it there."""
+    classifiers: dict[str, SourceClassifier] = {}
+    for name in router_names:
+        if not name.startswith("p2_"):
+            continue
+        featurizer = name.split("_", 1)[1]
+        path = None if model_dir is None else model_dir / f"p2_{featurizer}.joblib"
+        if path is not None and path.exists():
+            classifiers[featurizer] = SourceClassifier.load(path)
+            continue
+        classifiers[featurizer] = train_classifier(workload_dir, featurizer, train, seed)
+        if path is not None:
+            classifiers[featurizer].save(path)
+    return classifiers
 
 
 def build_router(
@@ -146,7 +177,10 @@ def run_question(
     answer_score = None if answer is None else score_answer(question, answer).value
 
     record = result.to_dict()
+    plan_sources = decision.plan.sources
     record.update({
+        "plan_sources": sorted(plan_sources),
+        "plan_missed_sources": sorted(spec.required_sources - plan_sources),
         "template_id": question.template_id,
         "selectivity": question.gold.get("selectivity"),
         "recall": score.value,
@@ -169,7 +203,7 @@ def run_question(
 
 SUMMARY_FIELDS = (
     "router", "qclass", "n", "mean_recall", "mean_tokens", "mean_latency_ms", "p95_latency_ms",
-    "mean_overhead_ms", "fallback_rate", "mean_sources_queried", "sources_queried",
+    "mean_overhead_ms", "fallback_rate", "missed_source_rate", "mean_sources_queried", "sources_queried",
     "mean_est_cost", "mean_measured_cost",
 )
 
@@ -201,6 +235,7 @@ def summarize(records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
                 "p95_latency_ms": float(np.percentile(latencies, 95)),
                 "mean_overhead_ms": _mean([r["planning_overhead_ms"] for r in group]),
                 "fallback_rate": sum(r["fallbacks_used"] > 0 for r in group) / len(group),
+                "missed_source_rate": sum(bool(r.get("plan_missed_sources")) for r in group) / len(group),
                 "mean_sources_queried": _mean([len(r["sources_queried"]) for r in group]),
                 "sources_queried": " ".join(f"{s}:{v:.2f}" for s, v in share.items()),
                 "mean_est_cost": _mean([r["est_cost"] for r in group]),
@@ -233,13 +268,14 @@ def write_summaries(out: Path, records: Sequence[dict[str, Any]]) -> list[dict[s
     overall = [r for r in rows if r["qclass"] == "all"]
     per_class = [r for r in rows if r["qclass"] != "all"]
     short = ("router", "qclass", "n", "mean_recall", "mean_tokens", "mean_latency_ms", "p95_latency_ms",
-             "mean_overhead_ms", "fallback_rate", "sources_queried")
+             "mean_overhead_ms", "fallback_rate", "missed_source_rate", "sources_queried")
     md = [
         "# Results",
         "",
         "Latency and overhead in ms (median over repeats per question; mean and p95 over questions).",
         "Recall: value row (A), gold admission's note (per-admission B), normalized recall@k (B list, C, D).",
         "fallback_rate: share of questions that ran at least one fallback plan.",
+        "missed_source_rate: share of questions whose chosen plan lacks a source the question needs.",
         "sources_queried: share of questions that queried each source.",
         "",
         "## All classes",
@@ -269,10 +305,14 @@ def run_experiment(
     repeats: int = 3,
     answerer: Answerer | None = None,
     progress: Callable[[str], None] | None = None,
+    classifiers: dict[str, SourceClassifier] | None = None,
 ) -> list[dict[str, Any]]:
-    """Run every router on every question; write results.jsonl, results.csv, results.md."""
+    """Run every router on every question; write results.jsonl, results.csv, results.md.
+
+    classifiers: P2 models by featurizer; missing ones are trained on workload_dir/dev.jsonl.
+    """
     out.mkdir(parents=True, exist_ok=True)
-    classifiers: dict[str, SourceClassifier] = {}
+    classifiers = {} if classifiers is None else classifiers
     records: list[dict[str, Any]] = []
     with (out / "results.jsonl").open("w", encoding="utf-8", newline="\n") as f:
         for name in router_names:
@@ -306,6 +346,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--sweep-on", choices=["paraphrased", "original", "none"], default="paraphrased",
         help="questions for the P2 TF-IDF tau sweep: held-out phrasings (default), as written, or skip",
     )
+    parser.add_argument("--train-workload", type=Path, default=None,
+                        help="workload whose dev.jsonl trains P2 (default --workload); use data/workload when "
+                             "--workload is a paraphrase set")
+    parser.add_argument("--p2-train", choices=P2_TRAIN, default="dev",
+                        help="P2 training data: dev questions, or dev plus their train-family paraphrases")
+    parser.add_argument("--p2-model-dir", type=Path, default=None,
+                        help="reuse <dir>/p2_<featurizer>.joblib if present, else train and save there")
+    parser.add_argument("--fig6", action="store_true", help="write figures/fig6_paraphrase_e2e.png (tokens vs recall)")
     return parser.parse_args(argv)
 
 
@@ -323,9 +371,17 @@ def main(argv: list[str] | None = None) -> Path:
                     "planner_config": asdict(config), "n_questions": len(questions)}, indent=2) + "\n",
         encoding="utf-8",
     )
+    train_workload = args.train_workload or args.workload
+    classifiers = load_or_train_classifiers(args.routers, train_workload, args.p2_train, args.p2_model_dir)
     records = run_experiment(
-        sources, questions, args.routers, config, args.workload, out, args.tau, args.repeats, progress=print
+        sources, questions, args.routers, config, train_workload, out, args.tau, args.repeats,
+        progress=print, classifiers=classifiers,
     )
+    if args.fig6:
+        from clinrag.eval.analysis import fig_paraphrase_e2e
+
+        (out / "figures").mkdir(parents=True, exist_ok=True)
+        fig_paraphrase_e2e(records, out / "figures" / "fig6_paraphrase_e2e.png")
     if not args.no_analysis:
         from clinrag.eval.analysis import run_analyses
 

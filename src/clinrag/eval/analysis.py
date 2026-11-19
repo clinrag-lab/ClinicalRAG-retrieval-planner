@@ -310,6 +310,36 @@ def fig_tokens_vs_recall(records: Sequence[dict[str, Any]], path: Path) -> None:
     plt.close(fig)
 
 
+def fig_paraphrase_e2e(records: Sequence[dict[str, Any]], path: Path) -> None:
+    """Mean tokens vs mean recall per router on held-out phrasings (RQ3), +-1 SE."""
+    plt = _plt()
+    routers = list(dict.fromkeys(r["router"] for r in records))
+    stats = {}
+    for router in routers:
+        mine = [r for r in records if r["router"] == router]
+        tok, rec = [r["tokens"] for r in mine], [r["recall"] for r in mine]
+        missed = sum(bool(r.get("plan_missed_sources")) for r in mine) / len(mine)
+        stats[router] = (np.mean(tok), _se(tok), np.mean(rec), _se(rec), missed)
+    fig, ax = plt.subplots(figsize=(7.5, 5))
+    for i, router in enumerate(routers):
+        mt, st, mr, sr, missed = stats[router]
+        ax.errorbar(mt, mr, xerr=st, yerr=sr, fmt="o", capsize=4, color=f"C{i}",
+                    label=f"{router} (missed sources {missed:.0%})")
+    best = max(routers, key=lambda r: stats[r][2])
+    ax.set_xlabel("Mean evidence tokens per question (tokens, \u00b11 SE)")
+    ax.set_ylabel("Mean retrieval recall (0 to 1, \u00b11 SE)")
+    ax.set_title(
+        f"Held-out phrasings ({len(records) // len(routers)} questions): {best} reaches the highest recall "
+        f"({stats[best][2]:.2f})",
+        fontsize=10,
+    )
+    ax.legend(title="router", fontsize=8)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
 def fig_order_vs_selectivity(rows: Sequence[dict[str, Any]], config: PlannerConfig, path: Path) -> None:
     plt = _plt()
     fig, ax = plt.subplots(figsize=(7.5, 5))
