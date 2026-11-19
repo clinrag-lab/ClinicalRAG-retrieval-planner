@@ -80,6 +80,9 @@ def cost_model_check(
         clear_query_cache(sources)
         decision = planner.plan(q.spec)
         for scored in decision.candidates:
+            # Every candidate pays its own query encode, as the cost model assumes; otherwise
+            # whichever plan runs first would carry the encode for the rest.
+            clear_query_cache(sources)
             result = execute(scored.plan, sources, q.spec, config)
             assert scored.cost is not None
             rows.append({
@@ -131,6 +134,12 @@ def _variant(decision: PlanDecision, mode: str) -> ScoredPlan | None:
     return None
 
 
+def _execute_uncached(plan, sources: Sources, spec, config: PlannerConfig):
+    """execute() with an empty query cache, so each timed run pays its own encode."""
+    clear_query_cache(sources)
+    return execute(plan, sources, spec, config)
+
+
 def better_order(measured: dict[str, dict[str, float]]) -> str:
     """The order with higher recall; ties go to the lower latency (then filter_first)."""
     return min(measured, key=lambda m: (-measured[m]["recall"], measured[m]["latency_ms"], m))
@@ -152,7 +161,7 @@ def order_check(
             continue
         measured = {}
         for mode, scored in (("filter_first", ff), ("search_first", sf)):
-            runs = [execute(scored.plan, sources, q.spec, config) for _ in range(repeats)]
+            runs = [_execute_uncached(scored.plan, sources, q.spec, config) for _ in range(repeats)]
             measured[mode] = {
                 "latency_ms": statistics.median(r.total_latency_ms for r in runs),
                 "tokens": runs[0].tokens,

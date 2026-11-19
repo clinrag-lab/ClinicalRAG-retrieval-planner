@@ -149,3 +149,24 @@ def test_build_without_cache_keeps_raw_encoder(index_dir):
     sources = runner.build_faiss_sources(FIXTURES, index_dir, encoder=inner, cache_queries=False)
     assert sources.notes.model is inner
     clear_query_cache(sources)  # no-op without a cache
+
+
+
+def test_cost_model_check_times_every_candidate_with_its_own_encode(index_dir, workload):  # noqa: F811
+    from clinrag.config import PlannerConfig
+    from clinrag.eval import runner
+    from clinrag.eval.analysis import cost_model_check
+    from clinrag.planner.planner import CostPlanner
+
+    inner = CountingEncoder()
+    sources = runner.build_faiss_sources(FIXTURES, index_dir, encoder=inner)
+    config = PlannerConfig()
+    for qclass in ("B", "C"):  # B: planning does not probe; C: planning probes
+        question = next(q for q in workload.test if q.spec.qclass == qclass and q.spec.note_query)
+        decision = CostPlanner(sources, config).plan(question.spec)
+        with_search = sum(c.plan.note_search is not None for c in decision.candidates)
+        assert with_search >= 1
+        inner.texts.clear()
+        cost_model_check([question], sources, config)
+        # At least one encode per candidate that searches notes: none reuses another's embedding.
+        assert inner.query_encodes() >= with_search
