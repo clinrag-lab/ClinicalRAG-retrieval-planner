@@ -10,6 +10,10 @@ Sources:
                notes (tests/fixtures); for smoke tests
     reference  reference implementations over the MIMIC-IV demo tables and the
                generated notes (--tables-dir, --notes-dir)
+    faiss      the demo tables and ICD graph as in reference, with the notes
+               served by FaissNotesSource from a prebuilt index (--index-dir,
+               built by scripts/build_vector_index.py); BGE chunks, so an
+               admission can own several chunks
 
 For each (router, question) the runner decides and executes with
 run_with_fallback --repeats times. Latency and planning overhead are the
@@ -64,18 +68,56 @@ ROUTERS: tuple[str, ...] = (
 FIXTURE_DIR = Path("tests/fixtures")
 DEMO_TABLES = Path("data/mimic-iv-demo")
 DEMO_NOTES = Path("data/generated")
+FAISS_INDEX = Path("data/faiss_index")
+BGE_MODEL = "BAAI/bge-base-en-v1.5"
 CLASSES = ("A", "B", "C", "D")
 
 
 # ---- set-up -----------------------------------------------------------------------------
 
 
-def build_sources(kind: str, tables_dir: Path | None = None, notes_dir: Path | None = None) -> Sources:
+SOURCE_KINDS = ("fake", "reference", "faiss")
+
+
+def build_sources(
+    kind: str,
+    tables_dir: Path | None = None,
+    notes_dir: Path | None = None,
+    index_dir: Path | None = None,
+    encoder: Any = None,
+) -> Sources:
     if kind == "fake":
         return build_reference_sources(tables_dir or FIXTURE_DIR, notes_dir or FIXTURE_DIR)
     if kind == "reference":
         return build_reference_sources(tables_dir or DEMO_TABLES, notes_dir or DEMO_NOTES)
-    raise ValueError(f"unknown sources {kind!r}; expected fake or reference")
+    if kind == "faiss":
+        return build_faiss_sources(tables_dir or DEMO_TABLES, index_dir or FAISS_INDEX, encoder)
+    raise ValueError(f"unknown sources {kind!r}; expected one of {SOURCE_KINDS}")
+
+
+def build_faiss_sources(tables_dir: Path, index_dir: Path, encoder: Any = None) -> Sources:
+    """DemoRelationalSource + FaissNotesSource + IcdGraph.
+
+    The BGE model is loaded once here (unless an encoder is passed) and shared
+    with the source, which uses it for every query embedding. The index's chunk
+    metadata (one row per chunk) is registered with DuckDB, so note-count probes
+    count chunks, the same unit as total_notes() and count_notes_for().
+    """
+    from clinrag.sources.faiss_notes import FaissNotesSource
+    from clinrag.sources.icd_graph import IcdGraph
+    from clinrag.sources.reference import DemoRelationalSource
+
+    if not (Path(index_dir) / "notes.faiss").exists():
+        raise FileNotFoundError(f"no FAISS index in {index_dir}; build it with scripts/build_vector_index.py")
+    if encoder is None:
+        from sentence_transformers import SentenceTransformer
+
+        encoder = SentenceTransformer(BGE_MODEL)
+    relational = DemoRelationalSource.from_tables(tables_dir)
+    graph = IcdGraph.from_connection(relational.con)
+    notes = FaissNotesSource(index_dir, model_name=BGE_MODEL, encoder=encoder)
+    relational.register_notes([c["note_id"] for c in notes.chunks], [int(c["hadm_id"]) for c in notes.chunks])
+    return Sources(relational=relational, notes=notes, graph=graph)
 
 
 P2_TRAIN = ("dev", "dev+paraphrases")
@@ -330,9 +372,10 @@ def run_experiment(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--sources", choices=["fake", "reference"], default="fake")
+    parser.add_argument("--sources", choices=SOURCE_KINDS, default="fake")
     parser.add_argument("--tables-dir", type=Path, default=None)
     parser.add_argument("--notes-dir", type=Path, default=None)
+    parser.add_argument("--index-dir", type=Path, default=None, help=f"with --sources faiss (default {FAISS_INDEX})")
     parser.add_argument("--workload", type=Path, default=Path("data/workload"), help="directory with dev.jsonl and test.jsonl")
     parser.add_argument("--split", choices=["dev", "test"], default="dev")
     parser.add_argument("--routers", nargs="+", choices=ROUTERS, default=[r for r in ROUTERS if r != "p2_bge"])
@@ -362,7 +405,7 @@ def main(argv: list[str] | None = None) -> Path:
     config = load_planner_config(args.config) if args.config else PlannerConfig()
     out = args.out or Path("outputs/runs") / datetime.now().strftime("%Y%m%d-%H%M%S")
     out.mkdir(parents=True, exist_ok=True)
-    sources = build_sources(args.sources, args.tables_dir, args.notes_dir)
+    sources = build_sources(args.sources, args.tables_dir, args.notes_dir, args.index_dir)
     questions = read_jsonl(args.workload / f"{args.split}.jsonl")
     if args.limit is not None:
         questions = questions[: args.limit]

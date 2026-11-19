@@ -308,12 +308,14 @@ def write_outputs(config: PlannerConfig, report: dict[str, Any], out_yaml: Path)
 
 
 def main(argv: list[str] | None = None) -> PlannerConfig:
-    from clinrag.eval.runner import DEMO_NOTES, FIXTURE_DIR, build_sources
+    from clinrag.eval.runner import DEMO_NOTES, FIXTURE_DIR, SOURCE_KINDS, build_sources
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--sources", choices=["fake", "reference"], default="reference")
+    parser.add_argument("--sources", choices=SOURCE_KINDS, default="reference")
     parser.add_argument("--tables-dir", type=Path, default=None)
-    parser.add_argument("--notes-dir", type=Path, default=None)
+    parser.add_argument("--notes-dir", type=Path, default=None,
+                        help="generated notes; with --sources faiss, only for the concept tags")
+    parser.add_argument("--index-dir", type=Path, default=None, help="with --sources faiss")
     parser.add_argument("--workload", type=Path, default=Path("data/workload"))
     parser.add_argument("--split", choices=["dev", "test"], default="dev")
     parser.add_argument("--repeats", type=int, default=5)
@@ -325,7 +327,7 @@ def main(argv: list[str] | None = None) -> PlannerConfig:
     )
     args = parser.parse_args(argv)
 
-    sources = build_sources(args.sources, args.tables_dir, args.notes_dir)
+    sources = build_sources(args.sources, args.tables_dir, args.notes_dir, args.index_dir)
     notes_dir = args.notes_dir or (FIXTURE_DIR if args.sources == "fake" else DEMO_NOTES)
     tags = None if args.no_similarity else load_concept_tags(notes_dir)
     questions = read_jsonl(args.workload / f"{args.split}.jsonl")
