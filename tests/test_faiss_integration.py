@@ -7,12 +7,16 @@ all present; skipped otherwise, so CI stays green without data.
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 import pytest
 
+# Check availability without importing sentence_transformers (and torch) at collection:
+# tests/test_classifier.py asserts the TF-IDF path never has them in sys.modules.
+if importlib.util.find_spec("sentence_transformers") is None:
+    pytest.skip("sentence-transformers not installed", allow_module_level=True)
 pytest.importorskip("faiss")
-pytest.importorskip("sentence_transformers")
 
 from clinrag.config import PlannerConfig  # noqa: E402
 from clinrag.eval import runner  # noqa: E402
