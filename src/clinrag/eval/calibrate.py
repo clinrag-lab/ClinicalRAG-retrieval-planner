@@ -316,6 +316,7 @@ def main(argv: list[str] | None = None) -> PlannerConfig:
     parser.add_argument("--notes-dir", type=Path, default=None,
                         help="generated notes; with --sources faiss, only for the concept tags")
     parser.add_argument("--index-dir", type=Path, default=None, help="with --sources faiss")
+    parser.add_argument("--db", type=Path, default=None, help="with --sources duckdb or duckdb_faiss")
     parser.add_argument("--workload", type=Path, default=Path("data/workload"))
     parser.add_argument("--split", choices=["dev", "test"], default="dev")
     parser.add_argument("--repeats", type=int, default=5)
@@ -328,7 +329,9 @@ def main(argv: list[str] | None = None) -> PlannerConfig:
     args = parser.parse_args(argv)
 
     # No query cache: each timed search must pay its own query encode.
-    sources = build_sources(args.sources, args.tables_dir, args.notes_dir, args.index_dir, cache_queries=False)
+    sources = build_sources(
+        args.sources, args.tables_dir, args.notes_dir, args.index_dir, cache_queries=False, db_path=args.db
+    )
     notes_dir = args.notes_dir or (FIXTURE_DIR if args.sources == "fake" else DEMO_NOTES)
     tags = None if args.no_similarity else load_concept_tags(notes_dir)
     questions = read_jsonl(args.workload / f"{args.split}.jsonl")
