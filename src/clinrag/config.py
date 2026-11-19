@@ -90,3 +90,20 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> Config:
     if not isinstance(raw, dict):
         raise ValueError(f"Config file {path} must contain a YAML mapping.")
     return Config.from_dict(raw)
+
+
+def load_planner_config(path: str | Path) -> PlannerConfig:
+    """PlannerConfig from a YAML file of planner keys (e.g. outputs/calibrated_config.yaml).
+
+    Top-level Config keys (data_dir, notes_path, ...) are ignored, so a full
+    config.yaml works too; unknown keys are an error. Missing keys keep their defaults.
+    """
+    with Path(path).open("r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Config file {path} must contain a YAML mapping.")
+    top_level = {f.name for f in fields(Config)} - {"planner"}
+    unknown = set(raw) - top_level - set(_PLANNER_KEYS)
+    if unknown:
+        raise ValueError(f"Unknown config keys: {sorted(unknown)}")
+    return PlannerConfig(**{k: _CASTS[str(_PLANNER_KEYS[k])](v) for k, v in raw.items() if k in _PLANNER_KEYS})

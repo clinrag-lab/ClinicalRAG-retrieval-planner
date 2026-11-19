@@ -1,0 +1,340 @@
+"""Experiment runner: every router on every question, executed with fallback, scored and summarized.
+
+Usage:
+    python -m clinrag.eval.runner --sources reference --workload data/workload --split dev \\
+        --routers oracle p1 p2_tfidf query_all always_filter_first always_search_first \\
+        --config outputs/calibrated_config.yaml
+
+Sources:
+    fake       reference implementations over the bundled fixture tables and
+               notes (tests/fixtures); for smoke tests
+    reference  reference implementations over the MIMIC-IV demo tables and the
+               generated notes (--tables-dir, --notes-dir)
+
+For each (router, question) the runner decides and executes with
+run_with_fallback --repeats times. Latency and planning overhead are the
+medians over repeats; tokens, items and recall come from the first repeat
+(they do not change between repeats). Output in --out (default
+outputs/runs/<timestamp>/):
+
+    results.jsonl  one line per (router, question): every RoutingResult field,
+                   recall, estimated and measured cost, selectivity, answer fields
+    results.csv    per router and class: recall, tokens, latency, overhead, fallbacks
+    results.md     the same as tables
+    run.json       arguments and planner config
+    analysis/      cost model check, order check, overhead share, tau sweep
+                   (clinrag.eval.analysis; skip with --no-analysis)
+    figures/       fig1 to fig4
+
+P2 routers train their classifier on <workload>/dev.jsonl at start-up, so on
+the dev split P2 is evaluated on its own training questions.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import statistics
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import asdict, replace
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from clinrag.baselines.fixed import AlwaysFilterFirstRouter, AlwaysSearchFirstRouter, QueryAllRouter
+from clinrag.config import PlannerConfig, load_planner_config
+from clinrag.eval.metrics import retrieval_score, score_answer
+from clinrag.llm.answerer import Answerer, NullAnswerer
+from clinrag.planner.classifier import SourceClassifier
+from clinrag.planner.fallback import run_with_fallback
+from clinrag.planner.router import ClassifierCostRouter, OracleCostRouter, Router, RoutingResult
+from clinrag.planner.rule_planner import RulePlanner
+from clinrag.question import ALL_SOURCES
+from clinrag.sources.base import Sources
+from clinrag.sources.reference import build_reference_sources
+from clinrag.workload.schema import WorkloadQuestion, read_jsonl
+
+ROUTERS: tuple[str, ...] = (
+    "oracle", "p1", "p2_tfidf", "p2_bge", "query_all", "always_filter_first", "always_search_first",
+)
+FIXTURE_DIR = Path("tests/fixtures")
+DEMO_TABLES = Path("data/mimic-iv-demo")
+DEMO_NOTES = Path("data/generated")
+CLASSES = ("A", "B", "C", "D")
+
+
+# ---- set-up -----------------------------------------------------------------------------
+
+
+def build_sources(kind: str, tables_dir: Path | None = None, notes_dir: Path | None = None) -> Sources:
+    if kind == "fake":
+        return build_reference_sources(tables_dir or FIXTURE_DIR, notes_dir or FIXTURE_DIR)
+    if kind == "reference":
+        return build_reference_sources(tables_dir or DEMO_TABLES, notes_dir or DEMO_NOTES)
+    raise ValueError(f"unknown sources {kind!r}; expected fake or reference")
+
+
+def train_classifier(workload_dir: Path, featurizer: str) -> SourceClassifier:
+    """Fit on the dev split only."""
+    dev = read_jsonl(workload_dir / "dev.jsonl")
+    return SourceClassifier(featurizer=featurizer).fit([q.spec for q in dev])
+
+
+def build_router(
+    name: str,
+    sources: Sources,
+    config: PlannerConfig,
+    workload_dir: Path,
+    tau: float,
+    classifiers: dict[str, SourceClassifier] | None = None,
+) -> Router:
+    """Router for a CLI name. classifiers caches trained P2 models by featurizer."""
+    if name == "oracle":
+        return OracleCostRouter(sources, config)
+    if name == "p1":
+        return RulePlanner()
+    if name in ("p2_tfidf", "p2_bge"):
+        featurizer = name.split("_", 1)[1]
+        cache = classifiers if classifiers is not None else {}
+        if featurizer not in cache:
+            cache[featurizer] = train_classifier(workload_dir, featurizer)
+        return ClassifierCostRouter(cache[featurizer], sources, config, tau=tau, name=name)
+    if name == "query_all":
+        return QueryAllRouter(sources, config)
+    if name == "always_filter_first":
+        return AlwaysFilterFirstRouter(sources, config)
+    if name == "always_search_first":
+        return AlwaysSearchFirstRouter(sources, config)
+    raise ValueError(f"unknown router {name!r}; expected one of {ROUTERS}")
+
+
+# ---- one question -----------------------------------------------------------------------
+
+
+def run_question(
+    label: str,
+    router: Router,
+    question: WorkloadQuestion,
+    sources: Sources,
+    config: PlannerConfig,
+    repeats: int = 3,
+    answerer: Answerer | None = None,
+) -> dict[str, Any]:
+    """Decide and execute repeats times; one JSON-ready record."""
+    if repeats < 1:
+        raise ValueError("repeats must be at least 1")
+    spec = question.spec
+    decisions, runs = [], []
+    for _ in range(repeats):
+        decision = router.decide(spec)
+        decisions.append(decision)
+        runs.append(run_with_fallback(decision, sources, spec, config))
+    decision, run = decisions[0], runs[0]
+    latencies = [r.total_latency_ms for r in runs]
+    overheads = [d.planning_overhead_ms for d in decisions]
+
+    result = RoutingResult.from_run(label, spec, decision, run)
+    result = replace(result, latency_ms=statistics.median(latencies), planning_overhead_ms=statistics.median(overheads))
+    score = retrieval_score(question, run.items, config.top_k)
+
+    answerer = answerer or NullAnswerer()
+    answer, prompt_tokens, answer_ms = answerer.answer(spec, run.items)
+    answer_score = None if answer is None else score_answer(question, answer).value
+
+    record = result.to_dict()
+    record.update({
+        "template_id": question.template_id,
+        "selectivity": question.gold.get("selectivity"),
+        "recall": score.value,
+        "recall_metric": score.metric,
+        "measured_cost": result.latency_ms + config.alpha * result.tokens,
+        "evidence_ok": run.ok,
+        "attempts": [asdict(a) | {"sources_queried": sorted(a.sources_queried)} for a in run.attempts],
+        "latency_runs_ms": latencies,
+        "overhead_runs_ms": overheads,
+        "answerer": answerer.name,
+        "answer": answer,
+        "answer_score": answer_score,
+        "prompt_tokens": prompt_tokens,
+        "answer_latency_ms": answer_ms,
+    })
+    return record
+
+
+# ---- summaries --------------------------------------------------------------------------
+
+SUMMARY_FIELDS = (
+    "router", "qclass", "n", "mean_recall", "mean_tokens", "mean_latency_ms", "p95_latency_ms",
+    "mean_overhead_ms", "fallback_rate", "mean_sources_queried", "sources_queried",
+    "mean_est_cost", "mean_measured_cost",
+)
+
+
+def _mean(values: Sequence[float | None]) -> float | None:
+    present = [v for v in values if v is not None]
+    return float(np.mean(present)) if present else None
+
+
+def summarize(records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One row per (router, class) plus (router, "all"), routers in first-seen order."""
+    routers = list(dict.fromkeys(r["router"] for r in records))
+    rows = []
+    for router in routers:
+        mine = [r for r in records if r["router"] == router]
+        for qclass in (*CLASSES, "all"):
+            group = mine if qclass == "all" else [r for r in mine if r["qclass"] == qclass]
+            if not group:
+                continue
+            latencies = [r["latency_ms"] for r in group]
+            share = {s: sum(s in r["sources_queried"] for r in group) / len(group) for s in sorted(ALL_SOURCES)}
+            rows.append({
+                "router": router,
+                "qclass": qclass,
+                "n": len(group),
+                "mean_recall": _mean([r["recall"] for r in group]),
+                "mean_tokens": _mean([r["tokens"] for r in group]),
+                "mean_latency_ms": _mean(latencies),
+                "p95_latency_ms": float(np.percentile(latencies, 95)),
+                "mean_overhead_ms": _mean([r["planning_overhead_ms"] for r in group]),
+                "fallback_rate": sum(r["fallbacks_used"] > 0 for r in group) / len(group),
+                "mean_sources_queried": _mean([len(r["sources_queried"]) for r in group]),
+                "sources_queried": " ".join(f"{s}:{v:.2f}" for s, v in share.items()),
+                "mean_est_cost": _mean([r["est_cost"] for r in group]),
+                "mean_measured_cost": _mean([r["measured_cost"] for r in group]),
+            })
+    return rows
+
+
+def _fmt(value: Any, digits: int = 3) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, float):
+        return f"{value:.{digits}f}"
+    return str(value)
+
+
+def markdown_table(rows: Sequence[dict[str, Any]], fields: Sequence[str]) -> str:
+    lines = ["| " + " | ".join(fields) + " |", "|" + "---|" * len(fields)]
+    for row in rows:
+        lines.append("| " + " | ".join(_fmt(row.get(f)) for f in fields) + " |")
+    return "\n".join(lines)
+
+
+def write_summaries(out: Path, records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = summarize(records)
+    with (out / "results.csv").open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+    overall = [r for r in rows if r["qclass"] == "all"]
+    per_class = [r for r in rows if r["qclass"] != "all"]
+    short = ("router", "qclass", "n", "mean_recall", "mean_tokens", "mean_latency_ms", "p95_latency_ms",
+             "mean_overhead_ms", "fallback_rate", "sources_queried")
+    md = [
+        "# Results",
+        "",
+        "Latency and overhead in ms (median over repeats per question; mean and p95 over questions).",
+        "Recall: value row (A), gold admission's note (per-admission B), normalized recall@k (B list, C, D).",
+        "fallback_rate: share of questions that ran at least one fallback plan.",
+        "sources_queried: share of questions that queried each source.",
+        "",
+        "## All classes",
+        "",
+        markdown_table(overall, short),
+        "",
+        "## Per class",
+        "",
+        markdown_table(per_class, short),
+        "",
+    ]
+    (out / "results.md").write_text("\n".join(md), encoding="utf-8")
+    return rows
+
+
+# ---- main -------------------------------------------------------------------------------
+
+
+def run_experiment(
+    sources: Sources,
+    questions: Sequence[WorkloadQuestion],
+    router_names: Sequence[str],
+    config: PlannerConfig,
+    workload_dir: Path,
+    out: Path,
+    tau: float = 0.5,
+    repeats: int = 3,
+    answerer: Answerer | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> list[dict[str, Any]]:
+    """Run every router on every question; write results.jsonl, results.csv, results.md."""
+    out.mkdir(parents=True, exist_ok=True)
+    classifiers: dict[str, SourceClassifier] = {}
+    records: list[dict[str, Any]] = []
+    with (out / "results.jsonl").open("w", encoding="utf-8", newline="\n") as f:
+        for name in router_names:
+            start = time.perf_counter()
+            router = build_router(name, sources, config, workload_dir, tau, classifiers)
+            for question in questions:
+                record = run_question(name, router, question, sources, config, repeats, answerer)
+                records.append(record)
+                f.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+            if progress:
+                progress(f"{name}: {len(questions)} questions in {time.perf_counter() - start:.1f} s")
+    write_summaries(out, records)
+    return records
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--sources", choices=["fake", "reference"], default="fake")
+    parser.add_argument("--tables-dir", type=Path, default=None)
+    parser.add_argument("--notes-dir", type=Path, default=None)
+    parser.add_argument("--workload", type=Path, default=Path("data/workload"), help="directory with dev.jsonl and test.jsonl")
+    parser.add_argument("--split", choices=["dev", "test"], default="dev")
+    parser.add_argument("--routers", nargs="+", choices=ROUTERS, default=[r for r in ROUTERS if r != "p2_bge"])
+    parser.add_argument("--tau", type=float, default=0.5)
+    parser.add_argument("--repeats", type=int, default=3, help="executions per question; median latency is kept")
+    parser.add_argument("--config", type=Path, default=None, help="planner config YAML, e.g. outputs/calibrated_config.yaml")
+    parser.add_argument("--limit", type=int, default=None, help="use only the first N questions (smoke runs)")
+    parser.add_argument("--out", type=Path, default=None, help="default outputs/runs/<timestamp>/")
+    parser.add_argument("--no-analysis", action="store_true", help="skip the analyses and figures")
+    parser.add_argument(
+        "--sweep-on", choices=["paraphrased", "original", "none"], default="paraphrased",
+        help="questions for the P2 TF-IDF tau sweep: held-out phrasings (default), as written, or skip",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> Path:
+    args = parse_args(argv)
+    config = load_planner_config(args.config) if args.config else PlannerConfig()
+    out = args.out or Path("outputs/runs") / datetime.now().strftime("%Y%m%d-%H%M%S")
+    out.mkdir(parents=True, exist_ok=True)
+    sources = build_sources(args.sources, args.tables_dir, args.notes_dir)
+    questions = read_jsonl(args.workload / f"{args.split}.jsonl")
+    if args.limit is not None:
+        questions = questions[: args.limit]
+    (out / "run.json").write_text(
+        json.dumps({**{k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+                    "planner_config": asdict(config), "n_questions": len(questions)}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    records = run_experiment(
+        sources, questions, args.routers, config, args.workload, out, args.tau, args.repeats, progress=print
+    )
+    if not args.no_analysis:
+        from clinrag.eval.analysis import run_analyses
+
+        start = time.perf_counter()
+        run_analyses(records, questions, sources, config, args.workload, out, args.repeats, args.sweep_on)
+        print(f"analyses: {time.perf_counter() - start:.1f} s")
+    print(f"results: {out}")
+    return out
+
+
+if __name__ == "__main__":
+    main()
