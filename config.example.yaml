@@ -41,5 +41,13 @@ note_scan_ms_per_1k_notes: 0.5
 note_fetch_ms_per_1k_candidates: 2.0
 id_filter_ms_per_1k_ids: 1.0
 
+# Evidence check and fallback. A plan's evidence fails the check if it is
+# empty, if the best note similarity is below min_similarity, or if a filtered
+# note search keeps fewer than min_surviving_notes notes. On failure the next
+# cheapest wider plan runs, at most max_fallbacks times.
+min_similarity: 0.3
+min_surviving_notes: 1
+max_fallbacks: 2
+
 # Where run outputs are written (git-ignored).
 output_dir: outputs/

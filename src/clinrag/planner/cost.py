@@ -96,16 +96,24 @@ def note_step_cost(step: NoteSearch, probes: Probes, config: PlannerConfig) -> P
 
     latency:
       unfiltered    scan(total_notes) + fetch(k)
+      unfiltered, scoped to one admission (question.note_hadm_id; probes.scoped_notes set)
+                    id_filter(1) + scan(scoped_notes) + fetch(k)
       search_first  scan(total_notes) + fetch(min(ceil(k * total_notes / matching_notes), total_notes))
                     (fetch(total_notes) when matching_notes = 0)
       filter_first  id_filter(matching_admissions) + scan(matching_notes) + fetch(k)
-    rows   = min(k, total_notes) for unfiltered, min(k, matching_notes) otherwise
+    rows   = min(k, total_notes) for unfiltered (min(k, scoped_notes) when scoped),
+             min(k, matching_notes) otherwise
     tokens = rows * avg_tokens_per_chunk
     """
     k = config.top_k
     total = _need(probes.total_notes, "total_notes")
     filter_ids = 0
-    if step.mode == "unfiltered":
+    if step.mode == "unfiltered" and probes.scoped_notes is not None:
+        # The executor restricts unfiltered searches to note_hadm_id: filter_first over one admission.
+        filter_ids = 1
+        scanned, fetched = probes.scoped_notes, k
+        rows = min(k, probes.scoped_notes)
+    elif step.mode == "unfiltered":
         scanned, fetched = total, k
         rows = min(k, total)
     else:

@@ -9,7 +9,8 @@ src/clinrag/
   config.py        load settings from a YAML config
   question.py      QuestionSpec: a question and the inputs each source needs
   sources/         source interfaces (base.py), token counting, and implementations
-  planner/         probes, plan enumeration, cost model, order rule, executor
+  planner/         probes, plan enumeration, cost model, order rule, executor,
+                   routers (oracle, rules, classifier), source classifier, fallback
   workload/        synthetic notes, question templates and workload builder
   baselines/       baseline retrieval strategies
   eval/            metrics and experiment runners
@@ -19,7 +20,8 @@ tests/
   conftest.py      loads fixtures into an in-memory DuckDB
   fakes.py         deterministic fake sources for planner tests
 docs/
-  planner.md       planner design: cost formula, order rule, candidate plans
+  planner.md       planner design: cost formula, order rule, candidate plans,
+                   routing, source classifier, evidence check and fallback
 scripts/
   download_demo.sh fetch the open-access MIMIC-IV demo
   sol/             Slurm job scripts for ASU Sol

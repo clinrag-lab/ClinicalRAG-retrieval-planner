@@ -205,3 +205,38 @@ def test_per_admission_note_question_plans_notes_only():
     assert decision.plan.name == "notes_only"
     assert {item["hadm_id"] for item in result.items} == {7}
     assert sources.relational.calls == []
+
+
+def test_per_admission_note_question_costs_one_admission_scan():
+    # Admission 7 has 10 of the 1000 notes. The executor only searches those, so
+    # the cost is filter_first over one admission:
+    # id_filter(1) + scan(10) + fetch(5) = 0.001 + 0.005 + 0.01 = 0.016 ms,
+    # not scan(1000) + fetch(5) = 0.51 ms. Tokens: 5 chunks * 200.
+    sources = make_sources(high=set())
+    question = QuestionSpec(
+        qid="q7",
+        text="According to the discharge summary for admission 7, was dialysis performed?",
+        qclass="B",
+        note_query="dialysis",
+        note_hadm_id=7,
+        required_sources=frozenset({"notes"}),
+    )
+    decision = CostPlanner(sources, CONFIG).plan(question)
+
+    assert decision.probes.scoped_notes == 10
+    assert "count_notes_for" in sources.notes.calls
+    step = decision.chosen.cost.steps[0]
+    assert step.est_latency_ms == pytest.approx(0.016)
+    assert step.details == {"step": "notes:unfiltered", "scanned": 10, "fetched": 5, "filter_ids": 1}
+    assert costs(decision) == pytest.approx({"notes_only": 0.016 + 0.1 * 1000, "query_all": 0.016 + 0.1 * 1000})
+
+
+def test_unscoped_note_question_has_no_scoped_count():
+    sources = make_sources(high=set())
+    question = QuestionSpec(
+        qid="q8", text="Which notes mention dialysis?", qclass="B", note_query="dialysis",
+        required_sources=frozenset({"notes"}),
+    )
+    decision = CostPlanner(sources, CONFIG).plan(question)
+    assert decision.probes.scoped_notes is None
+    assert decision.chosen.cost.steps[0].est_latency_ms == pytest.approx(0.51)
