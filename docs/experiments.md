@@ -186,6 +186,31 @@ Step 5 overwrites the run's `fig2` with one panel per scale and adds `fig5`.
 The runner and calibration also take `--notes-dir data/generated/scale_S` to
 run everything on a scaled index.
 
+## Results freeze
+
+The frozen demo results (git tag `results-demo-v1`) live in
+`outputs/runs/final-demo/`. Each part comes from one command, listed in
+`clinrag.eval.freeze.COMMANDS` and repeated in `SUMMARY.md`:
+
+| folder | contents |
+|---|---|
+| `config/` | calibration on dev (scale 1), and s and beta tuned on dev at notes scale 10 |
+| `template-test/` | every router on the template test split, with analyses |
+| `scale-study/` | order check on test at notes scales 1, 10 and 50 |
+| `paraphrase-test/` | p1, p2_tfidf, oracle and query_all on the 684 held-out-phrasing test questions, one router per run under `parts/`, merged with `freeze --merge`; P2 trained on dev plus train-family paraphrases |
+| `routing/` | classifier routing report on held-out phrasings (P1, P2 tfidf, P2 bge) |
+
+After the runs, collect the headline numbers and figures:
+
+```
+python -m clinrag.eval.freeze --run outputs/runs/final-demo
+```
+
+This writes `SUMMARY.md` and copies every figure into `figures/`. P2 with
+BGE embeddings is evaluated for routing only: the end-to-end run with BGE
+exceeded laptop memory. `outputs/` is git-ignored, so the tag pins the code
+and the commands, not the result files.
+
 ## Caveats on the demo
 
 - **Fixed per-call costs dominate at scale 1.** The demo has 275 admissions
