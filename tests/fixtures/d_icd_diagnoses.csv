@@ -1,0 +1,12 @@
+icd_code,icd_version,long_title
+I10,10,Essential (primary) hypertension
+I214,10,Non-ST elevation (NSTEMI) myocardial infarction
+I480,10,Paroxysmal atrial fibrillation
+I509,10,"Heart failure, unspecified"
+N179,10,"Acute kidney failure, unspecified"
+N185,10,"Chronic kidney disease, stage 5"
+N186,10,End stage renal disease
+E119,10,Type 2 diabetes mellitus without complications
+J189,10,"Pneumonia, unspecified organism"
+K219,10,Gastro-esophageal reflux disease without esophagitis
+R079,10,"Chest pain, unspecified"

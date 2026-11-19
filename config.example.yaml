@@ -1,0 +1,25 @@
+# Copy to config.yaml (git-ignored) and edit paths for your machine.
+
+# Directory holding the MIMIC-IV hosp tables (CSV or CSV.GZ).
+data_dir: data/mimic-iv-demo/
+
+# Path to the discharge notes file (MIMIC-IV-Note discharge table).
+notes_path: data/mimic-iv-note/discharge.csv.gz
+
+# Sentence embedding model for the note index.
+embed_model: BAAI/bge-base-en-v1.5
+
+# Local model used to generate answers.
+llm_model: meta-llama/Llama-3.1-8B-Instruct
+
+# Number of retrieved items passed to the LLM.
+top_k: 5
+
+# Number of candidates fetched when probing a source before filtering.
+probe_k: 20
+
+# Token weight in plan cost.
+alpha: 1.0
+
+# Where run outputs are written (git-ignored).
+output_dir: outputs/
