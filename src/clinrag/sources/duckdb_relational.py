@@ -71,6 +71,15 @@ def _read_csv(path: Path, table: str) -> str:
     return f"(SELECT {columns} FROM read_csv({_literal(path)}, header = true, types = {{{struct}}}))"
 
 
+def _select(table: str, relation: str) -> str:
+    """The needed columns of an already loaded table, cast to the build's types."""
+    columns = ", ".join(f"CAST({col} AS {typ}) AS {col}" for col, typ in _CSV_TYPES[table].items())
+    return f"(SELECT {columns} FROM {relation})"
+
+
+_REQUIRED = ("admissions", "diagnoses_icd", "labevents")
+
+
 def build_database(tables_dir: str | Path, out: str | Path, overwrite: bool = False) -> Path:
     """Build the relational DuckDB file from the hosp tables (.csv or .csv.gz).
 
@@ -79,34 +88,61 @@ def build_database(tables_dir: str | Path, out: str | Path, overwrite: bool = Fa
     existing file unless overwrite is True.
     """
     directory = find_tables_dir(tables_dir)
-    out = Path(out)
-    if out.exists() and not overwrite:
-        raise FileExistsError(f"{out} exists; pass overwrite=True (--force) to replace it")
     paths = {name: table_path(directory, name) for name in _CSV_TYPES}
-    for name in ("admissions", "diagnoses_icd", "labevents"):
+    for name in _REQUIRED:
         if paths[name] is None:
             raise FileNotFoundError(f"Missing table {name} in {directory}")
+    relations = {name: _read_csv(path, name) if path else None for name, path in paths.items()}
+    con = duckdb.connect(":memory:")
+    try:
+        return _write_database(con, relations, Path(out), overwrite, source=str(directory))
+    finally:
+        con.close()
 
+
+def build_database_from_connection(
+    con: duckdb.DuckDBPyConnection, out: str | Path, overwrite: bool = False, source: str = "connection"
+) -> Path:
+    """Build the file from hosp tables already loaded in an in-memory connection
+    (as workload.tables.connect_tables loads them); used for scaled copies."""
+    names = {r[0] for r in con.execute(
+        "SELECT table_name FROM information_schema.tables WHERE table_catalog = 'memory' AND table_schema = 'main'"
+    ).fetchall()}
+    for name in _REQUIRED:
+        if name not in names:
+            raise ValueError(f"connection has no table {name}")
+    relations = {name: _select(name, f"memory.main.{name}") if name in names else None for name in _CSV_TYPES}
+    return _write_database(con, relations, Path(out), overwrite, source)
+
+
+def _write_database(
+    con: duckdb.DuckDBPyConnection, relations: dict[str, str | None], out: Path, overwrite: bool, source: str
+) -> Path:
+    if out.exists() and not overwrite:
+        raise FileExistsError(f"{out} exists; pass overwrite=True (--force) to replace it")
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".building")
     for stale in (tmp, tmp.with_name(tmp.name + ".wal")):
         stale.unlink(missing_ok=True)
-    con = duckdb.connect(str(tmp))
+    con.execute(f"ATTACH {_literal(tmp)} AS _build").fetchall()
     try:
-        _create_tables(con, paths)
-        con.execute("CHECKPOINT").fetchall()
+        con.execute("USE _build").fetchall()
+        _create_tables(con, relations, source)
     finally:
-        con.close()
+        con.execute("USE memory").fetchall()
+        con.execute("DETACH _build").fetchall()
     os.replace(tmp, out)
     return out
 
 
-def _create_tables(con: duckdb.DuckDBPyConnection, paths: dict[str, Path | None]) -> None:
+def _create_tables(con: duckdb.DuckDBPyConnection, relations: dict[str, str | None], source: str) -> None:
+    """Create every table in the current default catalog from the source relations."""
+
     def run(sql: str) -> list[tuple]:
         return con.execute(sql).fetchall()
 
     run("CREATE TABLE admissions (hadm_id BIGINT PRIMARY KEY, subject_id BIGINT)")
-    src = _read_csv(paths["admissions"], "admissions")
+    src = relations["admissions"]
     duplicates = run(f"SELECT count(*) - count(DISTINCT hadm_id) FROM {src} WHERE hadm_id IS NOT NULL")[0][0]
     if duplicates:
         # The source drops the admissions join from lab queries, which is exact only for unique hadm_ids.
@@ -115,7 +151,7 @@ def _create_tables(con: duckdb.DuckDBPyConnection, paths: dict[str, Path | None]
 
     # Only rows a lab query can return: DemoRelationalSource joins admissions and
     # requires a non-null hadm_id and valuenum on every lab query.
-    src = _read_csv(paths["labevents"], "labevents")
+    src = relations["labevents"]
     run(
         f"""
         CREATE TABLE labevents AS
@@ -128,7 +164,7 @@ def _create_tables(con: duckdb.DuckDBPyConnection, paths: dict[str, Path | None]
     )
 
     # Codes normalized once; dx_key in the "version:CODE" form of qualify().
-    src = _read_csv(paths["diagnoses_icd"], "diagnoses_icd")
+    src = relations["diagnoses_icd"]
     run(
         f"""
         CREATE TABLE diagnoses_all AS
@@ -152,8 +188,8 @@ def _create_tables(con: duckdb.DuckDBPyConnection, paths: dict[str, Path | None]
     run("DROP TABLE diagnoses_all")
 
     run("CREATE TABLE d_labitems (itemid BIGINT PRIMARY KEY, label VARCHAR)")
-    if paths["d_labitems"] is not None:
-        src = _read_csv(paths["d_labitems"], "d_labitems")
+    if relations["d_labitems"] is not None:
+        src = relations["d_labitems"]
         # The reference builds a dict from the rows in file order, so the last duplicate wins.
         run(
             f"""
@@ -168,8 +204,8 @@ def _create_tables(con: duckdb.DuckDBPyConnection, paths: dict[str, Path | None]
         "CREATE TABLE d_icd_diagnoses (icd_code VARCHAR, icd_version INTEGER, long_title VARCHAR, "
         "PRIMARY KEY (icd_code, icd_version))"
     )
-    if paths["d_icd_diagnoses"] is not None:
-        src = _read_csv(paths["d_icd_diagnoses"], "d_icd_diagnoses")
+    if relations["d_icd_diagnoses"] is not None:
+        src = relations["d_icd_diagnoses"]
         run(
             f"""
             INSERT INTO d_icd_diagnoses
@@ -184,8 +220,8 @@ def _create_tables(con: duckdb.DuckDBPyConnection, paths: dict[str, Path | None]
 
     run("CREATE TABLE build_info (key VARCHAR PRIMARY KEY, value VARCHAR)")
     con.execute(
-        "INSERT INTO build_info VALUES ('schema_version', ?), ('tables_dir', ?)",
-        [SCHEMA_VERSION, str(paths["admissions"].parent)],
+        "INSERT INTO build_info VALUES ('schema_version', ?), ('source', ?)",
+        [SCHEMA_VERSION, source],
     ).fetchall()
 
 
