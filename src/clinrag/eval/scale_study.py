@@ -15,9 +15,10 @@ Writes to --out:
     analysis/order_check_scale_S.csv, analysis/order_scale_summary.json and .md
     figures/fig2_order_vs_selectivity.png  one panel per scale: latency of both
                                            orders vs selectivity, rule switch marked
-    figures/fig5_scale.png                 notes in the index vs the share of
-                                           questions where filter_first is the
-                                           better order, and the rule's agreement
+    figures/fig5_scale.png                 notes in the index vs agreement with
+                                           the better order, one line per policy:
+                                           selectivity rule, cost model, always
+                                           filter_first, always search_first
     analysis/calibrated_config_scale_S.yaml  the config used at each scale
 """
 
@@ -43,6 +44,34 @@ def notes_dir_for(root: Path, scale: int) -> Path:
     return root if scale == 1 else root / f"scale_{scale}"
 
 
+POLICIES: tuple[str, ...] = ("selectivity_rule", "cost_model", "always_filter_first", "always_search_first")
+
+
+def policy_pick(policy: str, row: dict[str, Any]) -> str:
+    """The order a policy chooses for one order-check row."""
+    if policy == "selectivity_rule":
+        return row["rule_pick"]
+    if policy == "cost_model":
+        return row["cost_pick"]
+    return "filter_first" if policy == "always_filter_first" else "search_first"
+
+
+def policy_table(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per policy: share of questions where it picks the better order, and mean recall / latency of its picks."""
+    table = []
+    for policy in POLICIES:
+        picks = [policy_pick(policy, r) for r in rows]
+        table.append({
+            "policy": policy,
+            "n": len(rows),
+            "picks_better": float(np.mean([p == r["better"] for p, r in zip(picks, rows)])) if rows else 0.0,
+            "picks_filter_first": float(np.mean([p == "filter_first" for p in picks])) if rows else 0.0,
+            "mean_recall": float(np.mean([r[f"{p}_recall"] for p, r in zip(picks, rows)])) if rows else 0.0,
+            "mean_latency_ms": float(np.mean([r[f"{p}_ms"] for p, r in zip(picks, rows)])) if rows else 0.0,
+        })
+    return table
+
+
 def scale_summary(scale: int, rows: Sequence[dict[str, Any]], config: PlannerConfig) -> dict[str, Any]:
     total = int(statistics.median(r["total_notes"] for r in rows)) if rows else 0
     n = len(rows) or 1
@@ -63,6 +92,7 @@ def scale_summary(scale: int, rows: Sequence[dict[str, Any]], config: PlannerCon
         "mean_search_first_ms": float(np.mean([r["search_first_ms"] for r in rows])) if rows else None,
         "mean_filter_first_recall": float(np.mean([r["filter_first_recall"] for r in rows])) if rows else None,
         "mean_search_first_recall": float(np.mean([r["search_first_recall"] for r in rows])) if rows else None,
+        "policies": policy_table(rows),
     }
 
 
@@ -99,17 +129,18 @@ def fig_scale(summaries: Sequence[dict[str, Any]], path: Path) -> None:
     plt = _plt()
     xs = [s["total_notes"] for s in summaries]
     fig, ax = plt.subplots(figsize=(7.5, 5))
-    ax.plot(xs, [s["filter_first_better"] for s in summaries], "o-", label="filter_first is the better order")
-    ax.plot(xs, [s["rule_matches_better"] for s in summaries], "s--", label="rule picks the better order")
-    ax.plot(xs, [s["cost_matches_better"] for s in summaries], "^:", label="cost model picks the better order")
+    styles = {"selectivity_rule": "o-", "cost_model": "^--", "always_filter_first": "s:", "always_search_first": "v:"}
+    for policy in POLICIES:
+        ys = [next(p["picks_better"] for p in s["policies"] if p["policy"] == policy) for s in summaries]
+        ax.plot(xs, ys, styles[policy], label=policy.replace("_", " "))
     ax.set_xscale("log")
     ax.set_ylim(-0.02, 1.02)
     ax.set_xlabel("Notes in the index (log scale)")
-    ax.set_ylabel("Fraction of class C/D questions")
-    last = summaries[-1]
+    ax.set_ylabel("Agreement with the better order (fraction of C/D questions)")
+    rule = [next(p["picks_better"] for p in s["policies"] if p["policy"] == "selectivity_rule") for s in summaries]
     ax.set_title(
-        f"At {last['total_notes']:,} notes filter_first is better on {last['filter_first_better']:.0%}; "
-        f"the rule agrees with the better order on {last['rule_matches_better']:.0%}",
+        f"The selectivity rule picks the better order on {min(rule):.0%} to {max(rule):.0%} of C/D questions "
+        f"from {summaries[0]['total_notes']:,} to {summaries[-1]['total_notes']:,} notes",
         fontsize=9,
     )
     ax.legend(fontsize=8)
@@ -167,7 +198,18 @@ def main(argv: list[str] | None = None) -> list[dict[str, Any]]:
     )
     from clinrag.eval.runner import markdown_table
 
-    md = ["# Order check by index size", "", markdown_table(summaries, list(summaries[0])), ""]
+    flat = [{k: v for k, v in s.items() if k != "policies"} for s in summaries]
+    policy_rows = [{"total_notes": s["total_notes"], **p} for s in summaries for p in s["policies"]]
+    md = [
+        "# Order check by index size",
+        "",
+        markdown_table(flat, list(flat[0])),
+        "",
+        "## Policies: agreement with the better order, recall and latency of their picks",
+        "",
+        markdown_table(policy_rows, list(policy_rows[0])),
+        "",
+    ]
     for summary, rows in results:
         table = order_table(rows)
         md += [f"## {summary['total_notes']:,} notes (scale {summary['scale']})", "",

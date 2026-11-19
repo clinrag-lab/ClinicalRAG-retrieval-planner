@@ -78,9 +78,34 @@ def test_scale_study_end_to_end(workload, tmp_path):  # noqa: F811
     assert all(s["n"] > 0 for s in summaries)
     # The selectivity rule switches at the same selectivity on both indexes.
     assert summaries[0]["switch_selectivity"] == summaries[1]["switch_selectivity"] == 0.1
+    for summary in summaries:
+        policies = {p["policy"]: p for p in summary["policies"]}
+        assert set(policies) == {"selectivity_rule", "cost_model", "always_filter_first", "always_search_first"}
+        # The two fixed policies split the questions between them.
+        assert policies["always_filter_first"]["picks_better"] + policies["always_search_first"]["picks_better"] == 1.0
+        assert policies["always_filter_first"]["picks_better"] == summary["filter_first_better"]
+        assert policies["selectivity_rule"]["picks_better"] == summary["rule_matches_better"]
+        assert policies["always_filter_first"]["mean_recall"] == summary["mean_filter_first_recall"]
     for name in ("fig2_order_vs_selectivity.png", "fig5_scale.png"):
         assert (out / "figures" / name).read_bytes()[:4] == b"\x89PNG"
     data = json.loads((out / "analysis" / "order_scale_summary.json").read_text(encoding="utf-8"))
     assert data["split"] == "test" and len(data["summaries"]) == 2
     assert (out / "analysis" / "calibrated_config_scale_4.yaml").exists()
     assert (out / "analysis" / "order_check_scale_4.csv").exists()
+
+
+def test_policy_table_hand_computed():
+    rows = [
+        {"better": "filter_first", "rule_pick": "filter_first", "cost_pick": "search_first",
+         "filter_first_recall": 1.0, "search_first_recall": 0.5, "filter_first_ms": 4.0, "search_first_ms": 6.0},
+        {"better": "search_first", "rule_pick": "filter_first", "cost_pick": "search_first",
+         "filter_first_recall": 0.8, "search_first_recall": 0.8, "filter_first_ms": 9.0, "search_first_ms": 3.0},
+    ]
+    table = {p["policy"]: p for p in scale_study.policy_table(rows)}
+    assert table["selectivity_rule"]["picks_better"] == 0.5
+    assert table["selectivity_rule"]["mean_recall"] == pytest.approx(0.9)
+    assert table["selectivity_rule"]["mean_latency_ms"] == pytest.approx(6.5)
+    assert table["cost_model"]["picks_better"] == 0.5
+    assert table["cost_model"]["mean_latency_ms"] == pytest.approx(4.5)
+    assert table["always_filter_first"]["picks_better"] == 0.5
+    assert table["always_search_first"]["mean_recall"] == pytest.approx(0.65)
