@@ -24,11 +24,11 @@ alpha: 1.0
 # Planner cost model. Latencies and token averages are starting guesses;
 # calibrate them on real runs.
 
-# Order rule. Search-first fetches ceil(beta * k * N / f) candidates (N notes in
-# the index, f matching notes) and is used only if that is at most c * N;
-# otherwise filter-first. beta >= 1 corrects for filter and query being
-# correlated. Tune both with python -m clinrag.eval.tune_order.
-c: 0.25
+# Order rule. Filter-first when the filter keeps less than a fraction s of the
+# note index (f / N < s, f matching notes, N notes), else search-first.
+# Search-first fetches ceil(beta * k * N / f) candidates; beta >= 1 corrects for
+# filter and query being correlated. Tune both with python -m clinrag.eval.tune_order.
+s: 0.1
 beta: 1.0
 
 # Average tokens per relational result row and per note chunk.

@@ -129,7 +129,7 @@ class CostPlanner:
             k=self.config.top_k,
             total_notes=probes.total_notes,
             matching_notes=probes.matching_notes,
-            c=self.config.c,
+            s=self.config.s,
             beta=self.config.beta,
         )
 
@@ -146,4 +146,4 @@ class CostPlanner:
         search = plan.note_search
         if order is None or search is None or not plan.is_mixed or search.mode == order.order:
             return None
-        return f"order rule chose {order.order} (search-first candidates {order.candidates}, limit c * N = {order.limit:g})"
+        return f"order rule chose {order.order} (selectivity f / N = {order.selectivity:.3g}, threshold s = {order.s:g})"

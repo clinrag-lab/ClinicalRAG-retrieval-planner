@@ -37,7 +37,6 @@ from clinrag.eval.metrics import retrieval_score
 from clinrag.planner.classifier import SourceClassifier
 from clinrag.planner.execute import execute
 from clinrag.planner.fallback import run_with_fallback
-from clinrag.planner.order import switch_matching_notes
 from clinrag.planner.planner import CostPlanner, PlanDecision, ScoredPlan
 from clinrag.planner.router import ClassifierCostRouter
 from clinrag.sources.base import Sources
@@ -317,9 +316,7 @@ def fig_order_vs_selectivity(rows: Sequence[dict[str, Any]], config: PlannerConf
     xs = [r["selectivity"] for r in rows]
     ax.scatter(xs, [r["filter_first_ms"] for r in rows], label="filter_first", marker="o", alpha=0.7)
     ax.scatter(xs, [r["search_first_ms"] for r in rows], label="search_first", marker="^", alpha=0.7)
-    total = statistics.median(r["total_notes"] for r in rows)
-    switch = switch_matching_notes(config.top_k, config.c, config.beta) / total
-    ax.axvline(switch, color="gray", linestyle="--", label=f"rule switch (beta k / (c N) = {switch:.3g})")
+    ax.axvline(config.s, color="gray", linestyle="--", label=f"rule switch (selectivity s = {config.s:g})")
     n_ff = sum(r["faster"] == "filter_first" for r in rows)
     ax.set_xlabel("Filter selectivity (fraction of admissions passing the filter)")
     ax.set_ylabel("Measured retrieval latency (ms, median of repeats)")

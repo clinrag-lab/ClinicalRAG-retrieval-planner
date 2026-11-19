@@ -1,6 +1,6 @@
 """Analyses on the fake sources, with measured latencies planted so the outcome is hand-computable.
 
-Data and config as in test_planner: 100 admissions x 10 notes, k=5, c=0.1 (at most 100 search-first candidates).
+Data and config as in test_planner: 100 admissions x 10 notes, k=5, s=0.1 (filter-first below 10% of the notes).
 Creatinine is high on admissions 1-4 (40 notes: the rule picks filter_first, and
 the cost model agrees: 120.034 vs 120.75). Potassium is high on 1-60 (600 notes:
 the rule picks search_first; the cost model prefers filter_first, 120.37 vs 120.518).

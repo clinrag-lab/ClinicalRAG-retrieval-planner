@@ -76,8 +76,8 @@ def test_scale_study_end_to_end(workload, tmp_path):  # noqa: F811
     ])
     assert [s["total_notes"] for s in summaries] == [8, 32]
     assert all(s["n"] > 0 for s in summaries)
-    # The rule switches at the same matching-note count, a smaller selectivity on the larger index.
-    assert summaries[1]["switch_selectivity"] == pytest.approx(summaries[0]["switch_selectivity"] / 4)
+    # The selectivity rule switches at the same selectivity on both indexes.
+    assert summaries[0]["switch_selectivity"] == summaries[1]["switch_selectivity"] == 0.1
     for name in ("fig2_order_vs_selectivity.png", "fig5_scale.png"):
         assert (out / "figures" / name).read_bytes()[:4] == b"\x89PNG"
     data = json.loads((out / "analysis" / "order_scale_summary.json").read_text(encoding="utf-8"))

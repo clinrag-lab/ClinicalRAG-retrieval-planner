@@ -22,8 +22,8 @@ class PlannerConfig:
     top_k: int = 5  # evidence items passed to the LLM per note search
     probe_k: int = 20  # scores fetched by the cheap note probe
     alpha: float = 1.0  # token weight in plan cost
-    c: float = 0.25  # order rule: search-first may fetch at most c * total_notes candidates
-    beta: float = 1.0  # order rule: correlation correction on search-first candidates
+    s: float = 0.1  # order rule: filter-first when matching notes / total notes < s
+    beta: float = 1.0  # search-first over-fetch factor on ceil(k * N / f) candidates
     avg_tokens_per_row: float = 20.0  # tokens per relational result row
     avg_tokens_per_chunk: float = 256.0  # tokens per note chunk
     relational_ms: float = 20.0  # latency of one relational query
@@ -44,8 +44,10 @@ class PlannerConfig:
                 raise ValueError(f"{f.name} must be non-negative")
         if self.top_k < 1 or self.probe_k < 1:
             raise ValueError("top_k and probe_k must be at least 1")
-        if self.c <= 0 or self.beta <= 0:
-            raise ValueError("c and beta must be positive")
+        if not 0 < self.s <= 1:
+            raise ValueError("s must be in (0, 1]")
+        if self.beta <= 0:
+            raise ValueError("beta must be positive")
 
 
 _PLANNER_KEYS = {f.name: f.type for f in fields(PlannerConfig)}

@@ -3,8 +3,8 @@
 Data: 100 admissions with 10 notes each (1000 notes), one creatinine row per
 admission. Config: k=5, alpha=0.1, 10 tokens/row, 200 tokens/chunk,
 relational 20 ms, graph 2 ms, scan 0.5 ms per 1000 notes, fetch 2 ms per 1000
-candidates, id filter 1 ms per 1000 ids, c 0.1 (search-first may fetch at most
-100 of the 1000 notes), beta 1.
+candidates, id filter 1 ms per 1000 ids, s 0.1 (filter-first below 10% of the
+notes, i.e. fewer than 100 of 1000), beta 1.
 """
 
 import pytest
@@ -26,7 +26,7 @@ CONFIG = PlannerConfig(
     note_scan_ms_per_1k_notes=0.5,
     note_fetch_ms_per_1k_candidates=2.0,
     id_filter_ms_per_1k_ids=1.0,
-    c=0.1,
+    s=0.1,
 )
 HIGH_CREATININE = StructuredFilter(CREATININE, ">", 2.0)
 

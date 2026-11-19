@@ -1,17 +1,20 @@
 """Filter-order rule: restrict the note search first, or search first and filter after.
 
-Relative rule with a correlation correction:
+Selectivity rule:
 
-    candidates = ceil(beta * k * N / f)        N = notes in the index, f = matching notes
-    filter_first  if f == 0 or candidates > c * N
+    filter_first  if f == 0 or f / N < s
     search_first  otherwise
 
-k * N / f is how many unfiltered candidates keep about k matching notes if
-matching notes were spread evenly through the ranking. beta >= 1 corrects for
-the filter and the query being correlated (relevant notes cluster outside the
-cohort), so search-first fetches more. c is the largest fraction of the index
-search-first may fetch before filter-first is preferred. Both are PlannerConfig
-keys; python -m clinrag.eval.tune_order fits them on dev.
+N = notes in the index, f = notes of the admissions passing the filter, s =
+the selectivity threshold. beta is only the search-first over-fetch factor:
+search-first fetches ceil(beta * k * N / f) candidates, since relevant notes
+cluster outside the cohort when filter and query are correlated. Both are
+PlannerConfig keys; python -m clinrag.eval.tune_order fits them on dev.
+
+The previous rule (filter_first when beta * k * N / f > c * N) cancels N and
+reduces to "f < beta * k / c": a fixed number of matching notes, so on a
+larger index it chose search_first for ever more selective filters. f / N is
+a fraction of the index and means the same at any index size.
 """
 
 from __future__ import annotations
@@ -29,7 +32,6 @@ class OrderDecision:
 
     candidates: beta-corrected search-first candidates needed to keep about k
                 notes after filtering; None when no notes match.
-    limit:      c * total_notes, the most candidates search-first may fetch.
     """
 
     order: Order
@@ -37,12 +39,13 @@ class OrderDecision:
     k: int
     total_notes: int
     matching_notes: int
-    c: float
+    s: float
     beta: float
 
     @property
-    def limit(self) -> float:
-        return self.c * self.total_notes
+    def selectivity(self) -> float:
+        """f / N, the fraction of the index that passes the filter."""
+        return self.matching_notes / self.total_notes if self.total_notes else 0.0
 
 
 def search_first_candidates(k: int, total_notes: int, matching_notes: int, beta: float = 1.0) -> int | None:
@@ -72,30 +75,25 @@ def candidates_to_fetch(k: int, total_notes: int, matching_notes: int, beta: flo
     return total_notes if needed is None else min(needed, total_notes)
 
 
-def choose_order(k: int, total_notes: int, matching_notes: int, c: float = 0.25, beta: float = 1.0) -> OrderDecision:
-    """Pick filter_first or search_first for a filtered note search.
+def choose_order(k: int, total_notes: int, matching_notes: int, s: float = 0.1, beta: float = 1.0) -> OrderDecision:
+    """filter_first if no notes match or the filter keeps less than a fraction s of the index, else search_first.
 
-    filter_first if no notes match or search-first needs more than c * total_notes
-    candidates; search_first otherwise (the exact boundary counts as search_first).
+    The exact boundary f / N == s counts as search_first. The returned decision
+    carries the beta-corrected search-first candidate count either way.
     """
-    if c <= 0:
-        raise ValueError("c must be positive")
+    if not 0 < s <= 1:
+        raise ValueError("s must be in (0, 1]")
     needed = search_first_candidates(k, total_notes, matching_notes, beta)
-    order: Order = "filter_first" if needed is None or needed > c * total_notes else "search_first"
+    selective = matching_notes == 0 or matching_notes < s * total_notes
     return OrderDecision(
-        order=order,
+        order="filter_first" if selective else "search_first",
         candidates=needed,
         k=k,
         total_notes=total_notes,
         matching_notes=matching_notes,
-        c=c,
+        s=s,
         beta=beta,
     )
-
-
-def switch_matching_notes(k: int, c: float, beta: float = 1.0) -> float:
-    """Matching-note count at which the rule switches: search_first iff f >= beta * k / c."""
-    return beta * k / c
 
 
 def _check_counts(k: int, total_notes: int, matching_notes: int) -> None:

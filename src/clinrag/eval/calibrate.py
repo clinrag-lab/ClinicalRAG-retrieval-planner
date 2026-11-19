@@ -321,7 +321,7 @@ def main(argv: list[str] | None = None) -> PlannerConfig:
     parser.add_argument("--out", type=Path, default=Path("outputs/calibrated_config.yaml"))
     parser.add_argument(
         "--base-config", type=Path, default=None,
-        help="config whose unfitted keys (e.g. tuned c and beta) are kept; default PlannerConfig()",
+        help="config whose unfitted keys (e.g. tuned s and beta) are kept; default PlannerConfig()",
     )
     args = parser.parse_args(argv)
 

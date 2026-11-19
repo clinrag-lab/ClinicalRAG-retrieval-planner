@@ -8,7 +8,7 @@ Usage:
 For each scale S the notes come from <notes-root> (S = 1) or
 <notes-root>/scale_S/. The cost constants are re-calibrated on the scaled
 sources with the dev split's queries (--config supplies the base, so the
-tuned c and beta are kept), then every class C and D question of --split
+tuned s and beta are kept), then every class C and D question of --split
 runs both filter_first and search_first (clinrag.eval.analysis.order_check).
 
 Writes to --out:
@@ -35,7 +35,6 @@ import numpy as np
 from clinrag.config import PlannerConfig, load_planner_config, save_planner_config
 from clinrag.eval.analysis import _plt, _write_csv, order_check, order_table
 from clinrag.eval.calibrate import calibrate, load_concept_tags
-from clinrag.planner.order import switch_matching_notes
 from clinrag.sources.reference import build_reference_sources
 from clinrag.workload.schema import read_jsonl
 
@@ -51,10 +50,9 @@ def scale_summary(scale: int, rows: Sequence[dict[str, Any]], config: PlannerCon
         "scale": scale,
         "total_notes": total,
         "n": len(rows),
-        "c": config.c,
+        "s": config.s,
         "beta": config.beta,
-        "switch_matching_notes": switch_matching_notes(config.top_k, config.c, config.beta),
-        "switch_selectivity": switch_matching_notes(config.top_k, config.c, config.beta) / total if total else None,
+        "switch_selectivity": config.s,
         "filter_first_faster": sum(r["faster"] == "filter_first" for r in rows) / n,
         "filter_first_better": sum(r["better"] == "filter_first" for r in rows) / n,
         "rule_picks_filter_first": sum(r["rule_pick"] == "filter_first" for r in rows) / n,
@@ -129,7 +127,7 @@ def main(argv: list[str] | None = None) -> list[dict[str, Any]]:
     parser.add_argument("--split", choices=["dev", "test"], default="test")
     parser.add_argument("--scales", type=int, nargs="+", default=[1, 10, 50])
     parser.add_argument("--config", type=Path, default=Path("outputs/calibrated_config.yaml"),
-                        help="base config (tuned c and beta are kept; timings are re-calibrated per scale)")
+                        help="base config (tuned s and beta are kept; timings are re-calibrated per scale)")
     parser.add_argument("--no-calibrate", action="store_true", help="use --config as is at every scale")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--out", type=Path, required=True)
@@ -150,7 +148,7 @@ def main(argv: list[str] | None = None) -> list[dict[str, Any]]:
         if not args.no_calibrate:
             config, _ = calibrate(sources, dev, base=base, repeats=args.repeats, concept_tags=load_concept_tags(notes_dir))
             save_planner_config(config, adir / f"calibrated_config_scale_{scale}.yaml",
-                                f"Calibrated on notes scale {scale}; c and beta from {args.config}.")
+                                f"Calibrated on notes scale {scale}; s and beta from {args.config}.")
         rows = order_check(questions, sources, config, args.repeats)
         _write_csv(adir / f"order_check_scale_{scale}.csv", rows)
         _write_csv(adir / f"order_check_by_selectivity_scale_{scale}.csv", order_table(rows))

@@ -108,38 +108,50 @@ starting guesses to be calibrated on real runs.
 
 ## Filter-order rule
 
-When a structured filter restricts a note search, search-first needs about
-`k * N / f` unfiltered candidates to keep k notes after filtering, where
-`N = total_notes` and `f = matching_notes`. That holds only if the matching
-notes are spread evenly through the ranking. If the filter and the query are
-correlated, relevant notes cluster outside the cohort and more candidates are
-needed, so the rule scales the count by `beta`:
+The rule decides by **selectivity**, the fraction of the note index that
+passes the structured filter:
 
 ```
-candidates = ceil(beta * k * N / f)
+f = matching notes (notes of the admissions passing the filter), N = total notes
+filter_first   if f == 0 or f / N < s
+search_first   otherwise (the exact boundary counts as search_first)
 ```
 
-- `f == 0` -> filter_first
-- candidates `> c * N` -> filter_first
-- otherwise -> search_first (the exact boundary counts as search_first)
+Search-first fetches `candidates = ceil(beta * k * N / f)` unfiltered notes.
+`k * N / f` keeps about k matching notes if they were spread evenly through
+the ranking. When filter and query are correlated, relevant notes cluster
+outside the cohort, and `beta >= 1` over-fetches to compensate. `beta` only
+sets this count; it does not move the switch. The planner fills the count
+into the plan, so the cost model and the executor fetch the same number.
 
-The limit is relative to the index size: search-first may fetch at most a
-fraction `c` of the index. Equivalently, it switches to search_first once
-`f >= beta * k / c` matching notes exist. The executor's search-first step
-fetches the same beta-corrected count, which the planner fills into the plan.
+**Why not a candidate budget.** The previous rule chose filter_first when
+search-first needed more than a fraction `c` of the index:
 
-`c` and `beta` are `PlannerConfig` keys (defaults 0.25 and 1.0).
-`python -m clinrag.eval.tune_order --split dev` grid-searches them on class C
-and D dev questions:
+```
+beta * k * N / f > c * N   <=>   f < beta * k / c
+```
 
-- grid: `c` in {0.02, 0.05, 0.1, 0.25, 0.5, 1.0}, `beta` in {1, 1.5, 2, 3};
+N cancels. The rule therefore switched at a fixed number of matching notes
+(200 with the dev-tuned c = 0.05, beta = 2). On 275 notes that is 73% of the
+index; on 13,750 notes it is 1.5%. On larger indexes the rule chose
+search_first for ever more selective filters, the cases where filter_first
+wins. Its agreement with the better order fell from 63% to 33% between 275
+and 13,750 notes. `f / N` is a fraction of the index, so a tuned `s` means
+the same thing at any index size.
+
+**Tuning.** `s` and `beta` are `PlannerConfig` keys (defaults 0.1 and 1.0).
+`python -m clinrag.eval.tune_order --split dev --notes-dir data/generated/scale_10`
+grid-searches them on the class C and D dev questions, at notes scale 10 (2,750
+notes), so both orders do real work:
+
+- grid: `s` in {0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5}, `beta` in {1, 2, 3};
 - for each question, the better order is the one with higher recall, ties
   broken by lower measured latency;
 - the winner maximizes the share of questions where the rule picks the better
   order, ties broken by the picked orders' mean recall, then mean latency.
 
-The tuned values are written into `outputs/calibrated_config.yaml`, with the
-full grid in `outputs/tune_order_report.md`. The test split is never used.
+The tuned values are written into the config, with the full grid in
+`outputs/tune_order_report.md`. The test split is never used.
 
 The planner applies this rule (`planner/order.py`) to each mixed plan family and
 prunes the variant it rules out. The pruned plan stays in `PlanDecision.candidates`

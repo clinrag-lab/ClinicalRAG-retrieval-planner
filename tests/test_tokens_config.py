@@ -23,10 +23,10 @@ def test_example_config_loads():
 
 
 def test_planner_keys_are_cast():
-    config = Config.from_dict({"data_dir": "d", "notes_path": "n", "top_k": "7", "alpha": 2, "c": "0.5", "beta": 2})
+    config = Config.from_dict({"data_dir": "d", "notes_path": "n", "top_k": "7", "alpha": 2, "s": "0.5", "beta": 2})
     assert config.planner.top_k == 7
     assert config.planner.alpha == 2.0 and isinstance(config.planner.alpha, float)
-    assert config.planner.c == 0.5 and config.planner.beta == 2.0 and isinstance(config.planner.beta, float)
+    assert config.planner.s == 0.5 and config.planner.beta == 2.0 and isinstance(config.planner.beta, float)
 
 
 def test_unknown_key_rejected():

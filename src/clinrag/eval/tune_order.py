@@ -1,7 +1,7 @@
-"""Tune the order rule's c and beta on class C/D dev questions.
+"""Tune the order rule's s and beta on class C/D dev questions.
 
 Usage:
-    python -m clinrag.eval.tune_order --split dev --config outputs/calibrated_config.yaml
+    python -m clinrag.eval.tune_order --split dev --config outputs/calibrated_config.yaml         --notes-dir data/generated/scale_10
 
 For every class C and D dev question, filter_first is executed once and
 search_first once per beta in the grid (beta changes how many candidates
@@ -9,9 +9,9 @@ search-first fetches, and so its recall). Latency is the median of --repeats.
 Per question and beta, the better order is the one with higher recall, ties
 broken by lower measured latency.
 
-Each (c, beta) in the grid is scored by the fraction of questions where the
+Each (s, beta) in the grid is scored by the fraction of questions where the
 rule (planner/order.py) picks the better order; ties are broken by the mean
-recall, then the mean latency, of the orders the rule picks. The winner's c and
+recall, then the mean latency, of the orders the rule picks. The winner's s and
 beta are written into the config (default outputs/calibrated_config.yaml); the
 full grid goes to outputs/tune_order_report.json and .md. Only the dev split is
 accepted.
@@ -38,8 +38,8 @@ from clinrag.planner.planner import CostPlanner
 from clinrag.sources.base import Sources
 from clinrag.workload.schema import WorkloadQuestion, read_jsonl
 
-GRID_C: tuple[float, ...] = (0.02, 0.05, 0.1, 0.25, 0.5, 1.0)
-GRID_BETA: tuple[float, ...] = (1.0, 1.5, 2.0, 3.0)
+GRID_S: tuple[float, ...] = (0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5)
+GRID_BETA: tuple[float, ...] = (1.0, 2.0, 3.0)
 
 
 def measure_orders(
@@ -86,22 +86,22 @@ def measure_orders(
 
 
 def score_grid(
-    rows: Sequence[dict[str, Any]], k: int, cs: Sequence[float] = GRID_C, betas: Sequence[float] = GRID_BETA
+    rows: Sequence[dict[str, Any]], k: int, ss: Sequence[float] = GRID_S, betas: Sequence[float] = GRID_BETA
 ) -> list[dict[str, Any]]:
-    """One row per (c, beta): rule agreement with the better order, and recall / latency of its picks."""
+    """One row per (s, beta): rule agreement with the better order, and recall / latency of its picks."""
     grid = []
     for beta in betas:
-        for c in cs:
+        for s in ss:
             agree, recall, latency, ff_picks = [], [], [], []
             for row in rows:
                 measured = {"filter_first": row["filter_first"], "search_first": row["search_first"][beta]}
-                pick = choose_order(k, row["total_notes"], row["matching_notes"], c=c, beta=beta).order
+                pick = choose_order(k, row["total_notes"], row["matching_notes"], s=s, beta=beta).order
                 agree.append(pick == better_order(measured))
                 recall.append(measured[pick]["recall"])
                 latency.append(measured[pick]["latency_ms"])
                 ff_picks.append(pick == "filter_first")
             grid.append({
-                "c": c,
+                "s": s,
                 "beta": beta,
                 "n": len(rows),
                 "agreement": round(float(np.mean(agree)), 4) if rows else 0.0,
@@ -125,8 +125,8 @@ def tune(
     rows = measure_orders(questions, sources, config, GRID_BETA, repeats)
     grid = score_grid(rows, config.top_k)
     winner = pick_winner(grid)
-    tuned = replace(config, c=winner["c"], beta=winner["beta"])
-    default = next(g for g in grid if g["c"] == PlannerConfig().c and g["beta"] == PlannerConfig().beta)
+    tuned = replace(config, s=winner["s"], beta=winner["beta"])
+    default = next(g for g in grid if g["s"] == PlannerConfig().s and g["beta"] == PlannerConfig().beta)
     report = {"winner": winner, "default": default, "n_questions": len(rows), "grid": grid, "questions": rows}
     return tuned, report
 
@@ -140,15 +140,15 @@ def write_report(report: dict[str, Any], out_dir: Path) -> Path:
         "",
         f"Questions: {report['n_questions']}. Better order: higher recall, ties to lower latency.",
         "",
-        f"Winner: c = {w['c']}, beta = {w['beta']}: rule picks the better order on {w['agreement']:.1%} "
+        f"Winner: s = {w['s']}, beta = {w['beta']}: rule picks the better order on {w['agreement']:.1%} "
         f"(mean recall {w['mean_recall']:.3f}, mean latency {w['mean_latency_ms']:.3f} ms).",
-        f"Default (c = {d['c']}, beta = {d['beta']}): {d['agreement']:.1%}.",
+        f"Default (s = {d['s']}, beta = {d['beta']}): {d['agreement']:.1%}.",
         "",
-        "| beta | c | agreement | mean_recall | mean_latency_ms | picks_filter_first |",
+        "| beta | s | agreement | mean_recall | mean_latency_ms | picks_filter_first |",
         "|---|---|---|---|---|---|",
     ]
     lines += [
-        f"| {g['beta']} | {g['c']} | {g['agreement']:.3f} | {g['mean_recall']:.3f} | {g['mean_latency_ms']:.3f} | "
+        f"| {g['beta']} | {g['s']} | {g['agreement']:.3f} | {g['mean_recall']:.3f} | {g['mean_latency_ms']:.3f} | "
         f"{g['picks_filter_first']:.3f} |"
         for g in report["grid"]
     ]
@@ -167,7 +167,7 @@ def main(argv: list[str] | None = None) -> PlannerConfig:
     parser.add_argument("--workload", type=Path, default=Path("data/workload"))
     parser.add_argument("--split", choices=["dev"], default="dev", help="dev only: the test split is never used for tuning")
     parser.add_argument("--config", type=Path, default=Path("outputs/calibrated_config.yaml"),
-                        help="base config, updated in place with the tuned c and beta")
+                        help="base config, updated in place with the tuned s and beta")
     parser.add_argument("--out-config", type=Path, default=None, help="where to write the tuned config (default: --config)")
     parser.add_argument("--report-dir", type=Path, default=Path("outputs"))
     parser.add_argument("--repeats", type=int, default=3)
@@ -178,10 +178,10 @@ def main(argv: list[str] | None = None) -> PlannerConfig:
     questions = read_jsonl(args.workload / f"{args.split}.jsonl")
     tuned, report = tune(questions, sources, base, args.repeats)
     out_config = args.out_config or args.config
-    save_planner_config(tuned, out_config, "Planner constants: calibrated timings, order rule c and beta tuned on dev.")
+    save_planner_config(tuned, out_config, "Planner constants: calibrated timings, order rule s and beta tuned on dev.")
     md = write_report(report, args.report_dir)
     print(md.read_text(encoding="utf-8"))
-    print(f"config: {out_config}  ({json.dumps({'c': tuned.c, 'beta': tuned.beta})})")
+    print(f"config: {out_config}  ({json.dumps({'s': tuned.s, 'beta': tuned.beta})})")
     return tuned
 
 

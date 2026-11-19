@@ -25,26 +25,27 @@ def rows():
 
 
 def test_score_grid_hand_computed():
-    grid = {(g["c"], g["beta"]): g for g in score_grid(rows(), k=5, cs=(0.1, 0.5), betas=(1.0, 3.0))}
+    # Selectivities: row 1 4%, row 2 60%.
+    grid = {(g["s"], g["beta"]): g for g in score_grid(rows(), k=5, ss=(0.02, 0.1), betas=(1.0, 3.0))}
     # beta 1: better = ff (recall) for row 1, sf (latency tie-break) for row 2.
-    # c 0.1: 125 > 100 -> ff, 9 <= 100 -> sf: both right.
+    # s 0.1: 4% < 10% -> ff, 60% -> sf: both right.
     assert grid[(0.1, 1.0)]["agreement"] == 1.0
     assert grid[(0.1, 1.0)]["mean_latency_ms"] == pytest.approx((5.0 + 2.0) / 2)
-    # c 0.5: 125 <= 500 -> sf for row 1: wrong.
-    assert grid[(0.5, 1.0)]["agreement"] == 0.5
-    assert grid[(0.5, 1.0)]["mean_recall"] == 0.75
-    # beta 3: better = sf for both (recall tie, sf faster). c 0.1: 375 > 100 -> ff: wrong for row 1.
+    # s 0.02: 4% >= 2% -> sf for row 1: wrong.
+    assert grid[(0.02, 1.0)]["agreement"] == 0.5
+    assert grid[(0.02, 1.0)]["mean_recall"] == 0.75
+    # beta 3: better = sf for both (recall tie, sf faster). s 0.1 -> ff for row 1: wrong.
     assert grid[(0.1, 3.0)]["agreement"] == 0.5
-    assert grid[(0.5, 3.0)]["agreement"] == 1.0
-    assert grid[(0.5, 3.0)]["picks_filter_first"] == 0.0
+    assert grid[(0.02, 3.0)]["agreement"] == 1.0
+    assert grid[(0.02, 3.0)]["picks_filter_first"] == 0.0
 
 
 def test_winner_breaks_ties_by_recall_then_latency():
-    grid = score_grid(rows(), k=5, cs=(0.1, 0.5), betas=(1.0, 3.0))
-    # (0.1, 1.0) and (0.5, 3.0) both agree on 100% with mean recall 1.0;
-    # latency 3.5 vs 3.25 ms picks (0.5, 3.0).
+    grid = score_grid(rows(), k=5, ss=(0.02, 0.1), betas=(1.0, 3.0))
+    # (0.1, 1.0) and (0.02, 3.0) both agree on 100% with mean recall 1.0;
+    # latency 3.5 vs 3.25 ms picks (0.02, 3.0).
     winner = pick_winner(grid)
-    assert (winner["c"], winner["beta"]) == (0.5, 3.0)
+    assert (winner["s"], winner["beta"]) == (0.02, 3.0)
 
 
 @pytest.fixture
@@ -70,11 +71,11 @@ def test_measure_orders_runs_search_first_per_beta(planted):
 
 
 def test_tune_writes_config_and_report(planted, tmp_path):
-    base = replace(CONFIG, c=0.25, beta=1.0)
+    base = replace(CONFIG, s=0.3, beta=1.0)
     tuned, report = tune_order.tune([TIGHT, LOOSE], sources(), base, repeats=1)
-    assert (tuned.c, tuned.beta) == (report["winner"]["c"], report["winner"]["beta"])
-    assert len(report["grid"]) == len(tune_order.GRID_C) * len(tune_order.GRID_BETA)
-    assert report["default"]["c"] == 0.25 and report["default"]["beta"] == 1.0
+    assert (tuned.s, tuned.beta) == (report["winner"]["s"], report["winner"]["beta"])
+    assert len(report["grid"]) == len(tune_order.GRID_S) * len(tune_order.GRID_BETA) == 21
+    assert report["default"]["s"] == 0.1 and report["default"]["beta"] == 1.0
     save_planner_config(tuned, tmp_path / "cfg.yaml")
     assert load_planner_config(tmp_path / "cfg.yaml") == tuned
     md = tune_order.write_report(report, tmp_path).read_text(encoding="utf-8")

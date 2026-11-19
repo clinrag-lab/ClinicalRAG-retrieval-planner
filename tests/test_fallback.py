@@ -2,7 +2,7 @@
 
 Same data and config as test_planner: 100 admissions x 10 notes; note scores
 fall with admission id (admission 1 ~ 1.0, admission 100 ~ 0.0); one creatinine
-row per admission; c 0.1 (at most 100 search-first candidates). min_similarity 0.3, min_surviving_notes 1.
+row per admission; s 0.1 (filter-first below 10% of the notes). min_similarity 0.3, min_surviving_notes 1.
 """
 
 from dataclasses import replace
@@ -92,10 +92,10 @@ def test_too_few_surviving_notes_triggers_next_plan():
 
 
 def test_search_first_with_no_survivors_triggers_next_plan():
-    # Admissions 96-100 match (50 notes): search_first fetches 100 candidates, all
-    # from admissions 1-10, so no note survives, and the relational rows are only
-    # a filter: the result is empty.
-    decision, run = oracle_run(high={96, 97, 98, 99, 100})
+    # Admissions 86-100 match (150 notes, 15% >= s): search_first fetches
+    # ceil(5 * 1000 / 150) = 34 candidates, all from admissions 1-4, so no note
+    # survives, and the relational rows are only a filter: the result is empty.
+    decision, run = oracle_run(high=set(range(86, 101)))
     assert decision.plan.name == "relational+notes:search_first"
     assert run.attempts[0].reason == "no evidence items"
     assert run.executed_plans[-1] == "query_all" and run.ok
