@@ -40,6 +40,7 @@ from clinrag.planner.fallback import run_with_fallback
 from clinrag.planner.planner import CostPlanner, PlanDecision, ScoredPlan
 from clinrag.planner.router import ClassifierCostRouter
 from clinrag.sources.base import Sources
+from clinrag.sources.caching_encoder import clear_query_cache
 from clinrag.workload.paraphrase import paraphrase_all, split_families
 from clinrag.workload.schema import WorkloadQuestion, read_jsonl
 
@@ -76,6 +77,7 @@ def cost_model_check(
     planner = CostPlanner(sources, config)
     rows: list[dict[str, Any]] = []
     for q in questions:
+        clear_query_cache(sources)
         decision = planner.plan(q.spec)
         for scored in decision.candidates:
             result = execute(scored.plan, sources, q.spec, config)
@@ -143,6 +145,7 @@ def order_check(
     for q in questions:
         if q.spec.qclass not in ("C", "D"):
             continue
+        clear_query_cache(sources)
         decision = planner.plan(q.spec)
         ff, sf = _variant(decision, "filter_first"), _variant(decision, "search_first")
         if ff is None or sf is None or decision.order is None:
@@ -255,6 +258,7 @@ def tau_sweep(
         router = ClassifierCostRouter(clf, sources, config, tau=tau, name="p2_tfidf")
         tokens, missed, recall = [], [], []
         for q in eval_questions:
+            clear_query_cache(sources)
             decision = router.decide(q.spec)
             run = run_with_fallback(decision, sources, q.spec, config)
             tokens.append(run.tokens)

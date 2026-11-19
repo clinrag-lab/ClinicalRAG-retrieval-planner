@@ -327,7 +327,8 @@ def main(argv: list[str] | None = None) -> PlannerConfig:
     )
     args = parser.parse_args(argv)
 
-    sources = build_sources(args.sources, args.tables_dir, args.notes_dir, args.index_dir)
+    # No query cache: each timed search must pay its own query encode.
+    sources = build_sources(args.sources, args.tables_dir, args.notes_dir, args.index_dir, cache_queries=False)
     notes_dir = args.notes_dir or (FIXTURE_DIR if args.sources == "fake" else DEMO_NOTES)
     tags = None if args.no_similarity else load_concept_tags(notes_dir)
     questions = read_jsonl(args.workload / f"{args.split}.jsonl")

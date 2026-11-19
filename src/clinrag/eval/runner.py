@@ -13,7 +13,8 @@ Sources:
     faiss      the demo tables and ICD graph as in reference, with the notes
                served by FaissNotesSource from a prebuilt index (--index-dir,
                built by scripts/build_vector_index.py); BGE chunks, so an
-               admission can own several chunks
+               admission can own several chunks. Query embeddings go through
+               a CachingEncoder, cleared before every question execution
 
 For each (router, question) the runner decides and executes with
 run_with_fallback --repeats times. Latency and planning overhead are the
@@ -59,6 +60,7 @@ from clinrag.planner.router import ClassifierCostRouter, OracleCostRouter, Route
 from clinrag.planner.rule_planner import RulePlanner
 from clinrag.question import ALL_SOURCES
 from clinrag.sources.base import Sources
+from clinrag.sources.caching_encoder import CachingEncoder, clear_query_cache
 from clinrag.sources.reference import build_reference_sources
 from clinrag.workload.schema import WorkloadQuestion, read_jsonl
 
@@ -85,23 +87,30 @@ def build_sources(
     notes_dir: Path | None = None,
     index_dir: Path | None = None,
     encoder: Any = None,
+    cache_queries: bool = True,
 ) -> Sources:
     if kind == "fake":
         return build_reference_sources(tables_dir or FIXTURE_DIR, notes_dir or FIXTURE_DIR)
     if kind == "reference":
         return build_reference_sources(tables_dir or DEMO_TABLES, notes_dir or DEMO_NOTES)
     if kind == "faiss":
-        return build_faiss_sources(tables_dir or DEMO_TABLES, index_dir or FAISS_INDEX, encoder)
+        return build_faiss_sources(tables_dir or DEMO_TABLES, index_dir or FAISS_INDEX, encoder, cache_queries)
     raise ValueError(f"unknown sources {kind!r}; expected one of {SOURCE_KINDS}")
 
 
-def build_faiss_sources(tables_dir: Path, index_dir: Path, encoder: Any = None) -> Sources:
+def build_faiss_sources(
+    tables_dir: Path, index_dir: Path, encoder: Any = None, cache_queries: bool = True
+) -> Sources:
     """DemoRelationalSource + FaissNotesSource + IcdGraph.
 
     The BGE model is loaded once here (unless an encoder is passed) and shared
     with the source, which uses it for every query embedding. The index's chunk
     metadata (one row per chunk) is registered with DuckDB, so note-count probes
     count chunks, the same unit as total_notes() and count_notes_for().
+
+    cache_queries wraps the encoder in a CachingEncoder, so a question's probe_search
+    and search share one embedding; run_question clears it before each execution.
+    Calibration passes False so every timed search pays its own encode.
     """
     from clinrag.sources.faiss_notes import FaissNotesSource
     from clinrag.sources.icd_graph import IcdGraph
@@ -113,6 +122,8 @@ def build_faiss_sources(tables_dir: Path, index_dir: Path, encoder: Any = None) 
         from sentence_transformers import SentenceTransformer
 
         encoder = SentenceTransformer(BGE_MODEL)
+    if cache_queries and not isinstance(encoder, CachingEncoder):
+        encoder = CachingEncoder(encoder)
     relational = DemoRelationalSource.from_tables(tables_dir)
     graph = IcdGraph.from_connection(relational.con)
     notes = FaissNotesSource(index_dir, model_name=BGE_MODEL, encoder=encoder)
@@ -203,6 +214,7 @@ def run_question(
     spec = question.spec
     decisions, runs = [], []
     for _ in range(repeats):
+        clear_query_cache(sources)  # each execution pays its own first encode
         decision = router.decide(spec)
         decisions.append(decision)
         runs.append(run_with_fallback(decision, sources, spec, config))
