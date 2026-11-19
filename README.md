@@ -50,7 +50,7 @@ All numbers are from the open MIMIC-IV Clinical Database Demo (275 admissions) w
 | Cost model ranking vs measured cost | Spearman 0.86 overall, 0.93 on tokens |
 | Wrong filter order on a large index | Post-filtering loses up to 86% of recall at 13,750 notes (0.12 vs 0.83) |
 | Planning time | 0.04 to 3 ms for single-source questions, 8 to 17 ms for filter-plus-search questions |
-| Reusing one query embedding across probe and search (BGE + FAISS) | Retrieval time 57% to 62% lower for the routers that probe (43% for query-all), end to end about a third lower, same results |
+| Reusing one query embedding across probe and search (BGE + FAISS) | Retrieval time 57% to 62% lower for the cost-based and fixed-order routers (43% for query-all), end to end about a third lower, same results |
 | Ablations | On the demo, the gains come from source selection and pre-filtering; removing the probes or the fallback changes recall by under 1 point |
 
 ![Tokens vs recall](docs/figures/fig1_tokens_vs_recall.png)
