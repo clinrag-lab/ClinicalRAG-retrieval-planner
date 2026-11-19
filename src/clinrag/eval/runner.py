@@ -28,6 +28,15 @@ outputs/runs/<timestamp>/):
 
 P2 routers train their classifier on <workload>/dev.jsonl at start-up, so on
 the dev split P2 is evaluated on its own training questions.
+
+Ablations (recorded in run.json and in every results.jsonl row):
+    --no-fallback  execute the chosen plan once; never fall back
+    --no-probes    the cost-based routers (oracle, p2_*) cost plans with fixed
+                   defaults instead of probe results: relational rows and graph
+                   codes are the medians over the calibration queries on
+                   <train-workload>/dev.jsonl (clinrag.eval.calibrate.probe_defaults),
+                   matching notes = total_notes * 0.3. Planning still enumerates
+                   and costs every plan.
 """
 
 from __future__ import annotations
@@ -50,6 +59,7 @@ from clinrag.config import PlannerConfig, load_planner_config
 from clinrag.eval.metrics import retrieval_score, score_answer
 from clinrag.llm.answerer import Answerer, NullAnswerer
 from clinrag.planner.classifier import SourceClassifier
+from clinrag.planner.probes import ProbeDefaults
 from clinrag.planner.fallback import run_with_fallback
 from clinrag.planner.router import ClassifierCostRouter, OracleCostRouter, Router, RoutingResult
 from clinrag.planner.rule_planner import RulePlanner
@@ -122,10 +132,14 @@ def build_router(
     workload_dir: Path,
     tau: float,
     classifiers: dict[str, SourceClassifier] | None = None,
+    probe_defaults: ProbeDefaults | None = None,
 ) -> Router:
-    """Router for a CLI name. classifiers caches trained P2 models by featurizer."""
+    """Router for a CLI name. classifiers caches trained P2 models by featurizer.
+
+    probe_defaults (no-probes ablation) applies to the cost-based routers, oracle and p2_*.
+    """
     if name == "oracle":
-        return OracleCostRouter(sources, config)
+        return OracleCostRouter(sources, config, probe_defaults)
     if name == "p1":
         return RulePlanner()
     if name in ("p2_tfidf", "p2_bge"):
@@ -133,7 +147,9 @@ def build_router(
         cache = classifiers if classifiers is not None else {}
         if featurizer not in cache:
             cache[featurizer] = train_classifier(workload_dir, featurizer)
-        return ClassifierCostRouter(cache[featurizer], sources, config, tau=tau, name=name)
+        return ClassifierCostRouter(
+            cache[featurizer], sources, config, tau=tau, name=name, probe_defaults=probe_defaults
+        )
     if name == "query_all":
         return QueryAllRouter(sources, config)
     if name == "always_filter_first":
@@ -154,8 +170,12 @@ def run_question(
     config: PlannerConfig,
     repeats: int = 3,
     answerer: Answerer | None = None,
+    max_fallbacks: int | None = None,
 ) -> dict[str, Any]:
-    """Decide and execute repeats times; one JSON-ready record."""
+    """Decide and execute repeats times; one JSON-ready record.
+
+    max_fallbacks: None uses config.max_fallbacks; 0 is the no-fallback ablation.
+    """
     if repeats < 1:
         raise ValueError("repeats must be at least 1")
     spec = question.spec
@@ -163,7 +183,7 @@ def run_question(
     for _ in range(repeats):
         decision = router.decide(spec)
         decisions.append(decision)
-        runs.append(run_with_fallback(decision, sources, spec, config))
+        runs.append(run_with_fallback(decision, sources, spec, config, max_fallbacks=max_fallbacks))
     decision, run = decisions[0], runs[0]
     latencies = [r.total_latency_ms for r in runs]
     overheads = [d.planning_overhead_ms for d in decisions]
@@ -306,20 +326,26 @@ def run_experiment(
     answerer: Answerer | None = None,
     progress: Callable[[str], None] | None = None,
     classifiers: dict[str, SourceClassifier] | None = None,
+    no_fallback: bool = False,
+    probe_defaults: ProbeDefaults | None = None,
 ) -> list[dict[str, Any]]:
     """Run every router on every question; write results.jsonl, results.csv, results.md.
 
     classifiers: P2 models by featurizer; missing ones are trained on workload_dir/dev.jsonl.
+    no_fallback, probe_defaults: the ablations (see the module docstring).
     """
+    ablation = {"no_fallback": no_fallback, "no_probes": probe_defaults is not None}
     out.mkdir(parents=True, exist_ok=True)
     classifiers = {} if classifiers is None else classifiers
     records: list[dict[str, Any]] = []
     with (out / "results.jsonl").open("w", encoding="utf-8", newline="\n") as f:
         for name in router_names:
             start = time.perf_counter()
-            router = build_router(name, sources, config, workload_dir, tau, classifiers)
+            router = build_router(name, sources, config, workload_dir, tau, classifiers, probe_defaults)
             for question in questions:
-                record = run_question(name, router, question, sources, config, repeats, answerer)
+                record = run_question(name, router, question, sources, config, repeats, answerer,
+                                      max_fallbacks=0 if no_fallback else None)
+                record.update(ablation)
                 records.append(record)
                 f.write(json.dumps(record, sort_keys=True, default=str) + "\n")
             if progress:
@@ -353,6 +379,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="P2 training data: dev questions, or dev plus their train-family paraphrases")
     parser.add_argument("--p2-model-dir", type=Path, default=None,
                         help="reuse <dir>/p2_<featurizer>.joblib if present, else train and save there")
+    parser.add_argument("--no-fallback", action="store_true",
+                        help="ablation: execute the chosen plan once and never fall back")
+    parser.add_argument("--no-probes", action="store_true",
+                        help="ablation: cost plans with fixed defaults instead of probe results (oracle, p2_*)")
     parser.add_argument("--fig6", action="store_true", help="write figures/fig6_paraphrase_e2e.png (tokens vs recall)")
     return parser.parse_args(argv)
 
@@ -366,16 +396,22 @@ def main(argv: list[str] | None = None) -> Path:
     questions = read_jsonl(args.workload / f"{args.split}.jsonl")
     if args.limit is not None:
         questions = questions[: args.limit]
+    train_workload = args.train_workload or args.workload
+    probe_defaults = None
+    if args.no_probes:
+        from clinrag.eval.calibrate import probe_defaults as calibration_defaults
+
+        probe_defaults = calibration_defaults(read_jsonl(train_workload / "dev.jsonl"), sources)
     (out / "run.json").write_text(
         json.dumps({**{k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
-                    "planner_config": asdict(config), "n_questions": len(questions)}, indent=2) + "\n",
+                    "planner_config": asdict(config), "n_questions": len(questions),
+                    "probe_defaults": None if probe_defaults is None else asdict(probe_defaults)}, indent=2) + "\n",
         encoding="utf-8",
     )
-    train_workload = args.train_workload or args.workload
     classifiers = load_or_train_classifiers(args.routers, train_workload, args.p2_train, args.p2_model_dir)
     records = run_experiment(
         sources, questions, args.routers, config, train_workload, out, args.tau, args.repeats,
-        progress=print, classifiers=classifiers,
+        progress=print, classifiers=classifiers, no_fallback=args.no_fallback, probe_defaults=probe_defaults,
     )
     if args.fig6:
         from clinrag.eval.analysis import fig_paraphrase_e2e
