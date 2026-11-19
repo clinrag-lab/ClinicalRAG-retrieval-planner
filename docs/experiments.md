@@ -15,6 +15,8 @@ runner: for each router, for each question
         summarize ─> results.csv, results.md
         analyses  ─> analysis/ (cost model, order check, overhead, tau sweep)
         figures   ─> figures/fig1..fig4
+tune_order (dev) ─> c, beta in calibrated_config.yaml
+scale_study ─> order check at several note-index sizes, figures fig2 and fig5
 ```
 
 ## Sources
@@ -151,21 +153,49 @@ with `--no-analysis`.
 | file | shows |
 |---|---|
 | `fig1_tokens_vs_recall.png` | mean tokens vs mean recall per router, ±1 SE |
-| `fig2_order_vs_selectivity.png` | latency of filter_first and search_first vs selectivity, with the rule's switch point |
+| `fig2_order_vs_selectivity.png` | latency of filter_first and search_first vs selectivity, with the rule's switch point; one panel per index size when written by `scale_study` |
 | `fig3_tau_sweep.png` | P2 TF-IDF tau vs missed-source rate and mean tokens (two axes) |
 | `fig4_overhead.png` | planning overhead stacked on retrieval latency per router |
+| `fig5_scale.png` | notes in the index (log) vs the share of C/D questions where filter_first is the better order, and how often the rule and the cost model pick it (`scale_study`) |
 
 Each title is computed from the data and states the takeaway.
 
+## Full rerun
+
+Tuning and calibration use the dev split only; results are reported on test.
+
+```
+# 1. timings and min_similarity on the scale-1 notes (dev queries)
+python -m clinrag.eval.calibrate --sources reference --workload data/workload --split dev
+# 2. order rule c and beta on class C/D dev questions; written into the same config
+python -m clinrag.eval.tune_order --split dev --config outputs/calibrated_config.yaml
+# 3. every router on the test split, with analyses and figures
+python -m clinrag.eval.runner --sources reference --workload data/workload --split test \
+    --routers oracle p1 p2_tfidf query_all always_filter_first always_search_first \
+    --config outputs/calibrated_config.yaml --out outputs/runs/<run>
+# 4. larger note indexes: S notes per admission, same per-admission concepts and gold
+python -m clinrag.workload.notes_gen --tables-dir data/mimic-iv-demo --out-dir data/generated --scale 10
+python -m clinrag.workload.notes_gen --tables-dir data/mimic-iv-demo --out-dir data/generated --scale 50
+# 5. order check at each scale, re-calibrated per scale (c and beta stay as tuned)
+python -m clinrag.eval.scale_study --split test --scales 1 10 50 \
+    --config outputs/calibrated_config.yaml --out outputs/runs/<run>
+```
+
+Step 5 overwrites the run's `fig2` with one panel per scale and adds `fig5`.
+The runner and calibration also take `--notes-dir data/generated/scale_S` to
+run everything on a scaled index.
+
 ## Caveats on the demo
 
-- **Fixed per-call costs dominate.** The demo has 275 admissions and one
-  note each. Every note search is cheap, so fixed per-call costs (query
-  vectorization, DuckDB call overhead, probes) dominate latency.
-- **The order rule never switches here.** It switches to filter_first only
-  when search-first needs more than `max_candidates` candidates. With 275
-  notes that never happens unless no note matches. Its switch point,
-  k / max_candidates, sits at the far left of figure 2.
+- **Fixed per-call costs dominate at scale 1.** The demo has 275 admissions
+  and one note each. Every note search is cheap, so fixed per-call costs
+  (query vectorization, DuckDB queries) dominate latency. Calibration fits
+  them as `*_fixed_ms`, and the scale study grows the index to 2,750 and
+  13,750 notes to separate the two orders.
+- **The order rule's switch is an absolute matching-note count.**
+  Search-first is chosen once `f >= beta * k / c` matching notes exist,
+  whatever the index size. On a larger index the switch therefore sits at a
+  smaller selectivity.
 - **Single runs are noisy.** Latency differences between plans are often
   below a millisecond, so the cost model check executes each plan once and
   its latency correlations are noisy.
