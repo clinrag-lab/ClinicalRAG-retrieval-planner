@@ -251,17 +251,18 @@ Median ms over 24 queries (M2 Pro, 10 DuckDB threads, DuckDB 1.5.6):
 
 | scale (lab rows) | source | count | matching_ids | count_notes | count_matches | run |
 |---|---|---|---|---|---|---|
-| x1 (0.11M) | reference | 1.03 | 1.62 | 1.42 | 2.59 | 2.54 |
-| x1 (0.11M) | duckdb | 0.26 | 0.84 | 0.69 | 1.63 | 1.05 |
-| x100 (10.8M) | reference | 9.25 | 14.32 | 12.03 | 11.67 | 53.59 |
-| x100 (10.8M) | duckdb | 1.11 | 3.30 | 2.43 | 2.81 | 35.02 |
+| x1 (0.11M) | reference | 1.09 | 1.71 | 1.62 | 2.71 | 2.59 |
+| x1 (0.11M) | duckdb | 0.29 | 0.90 | 0.74 | 1.70 | 1.11 |
+| x100 (10.8M) | reference | 10.08 | 16.53 | 14.05 | 13.67 | 55.42 |
+| x100 (10.8M) | duckdb | 1.18 | 3.39 | 2.77 | 2.97 | 37.24 |
 
 `count()` predicted the rows of `run()` exactly at every scale, and the two
 sources returned identical results. On the DuckDB store, `count_matches`, the
-planner's one-query probe, grows from 1.6 to 2.8 ms over 100x more data and
-costs a median 9% of running the query at x100 (23% on the reference).
+planner's one-query probe, grows from 1.7 to 3.0 ms over 100x more data and
+costs a median 8% of running the query at x100 (24% on the reference).
 `run()` gains least (1.5x): above x10 its time is mostly building the evidence
-items in Python. Building the file takes 1.1 s at x100 (112 MB).
+items in Python. Building the file takes 1.2 s at x100 (112 MB). The x100 copy
+replicates the demo, so every query's selectivity is the same at every scale.
 
 ## Caveats on the demo
 
