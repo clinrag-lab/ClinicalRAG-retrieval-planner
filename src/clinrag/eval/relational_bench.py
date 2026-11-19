@@ -332,10 +332,12 @@ def plot(rows: Sequence[dict[str, Any]], path: Path) -> None:
     ax.set_xlabel("data size (copies of the MIMIC-IV demo hosp tables)")
     ax.set_ylabel("median latency per query (ms, log)")
     top = max(scales)
-    probe = max(r["median_ms"] for r in rows if r["scale"] == top and r["source"] == "duckdb" and r["method"] in PROBES)
-    ref_run = next(r["median_ms"] for r in rows if r["scale"] == top and r["source"] == "reference" and r["method"] == "run")
-    ax.set_title(f"Relational probes on the DuckDB store stay ≤ {probe:.1f} ms at ×{top} data\n"
-                 f"(reference run(): {ref_run:.0f} ms)", fontsize=12)
+
+    def slowest_probe(source: str) -> float:
+        return max(r["median_ms"] for r in rows if r["scale"] == top and r["source"] == source and r["method"] in PROBES)
+
+    ax.set_title(f"At ×{top} data, every relational probe takes ≤ {slowest_probe('duckdb'):.1f} ms on the DuckDB store\n"
+                 f"vs. ≤ {slowest_probe('reference'):.1f} ms on the reference (medians over queries)", fontsize=11)
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(fontsize=8, ncol=2, loc="upper left")
     fig.tight_layout()
