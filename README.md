@@ -7,8 +7,9 @@ Cost-aware retrieval planning for clinical retrieval-augmented generation (RAG) 
 ```
 src/clinrag/
   config.py        load settings from a YAML config
-  sources/         DuckDB, FAISS and ICD hierarchy sources
-  planner/         plan selection (sources and filter-first vs search-first)
+  question.py      QuestionSpec: a question and the inputs each source needs
+  sources/         source interfaces (base.py), token counting, and implementations
+  planner/         probes, plan enumeration, cost model, order rule, executor
   workload/        query workload generation and loading
   baselines/       baseline retrieval strategies
   eval/            metrics and experiment runners
@@ -16,6 +17,9 @@ src/clinrag/
 tests/
   fixtures/        tiny fake dataset with MIMIC-IV column names
   conftest.py      loads fixtures into an in-memory DuckDB
+  fakes.py         deterministic fake sources for planner tests
+docs/
+  planner.md       planner design: cost formula, order rule, candidate plans
 scripts/
   download_demo.sh fetch the open-access MIMIC-IV demo
   sol/             Slurm job scripts for ASU Sol
