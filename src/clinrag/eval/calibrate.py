@@ -49,6 +49,7 @@ import pandas as pd
 import yaml
 
 from clinrag.config import PlannerConfig, load_planner_config
+from clinrag.planner.probes import ProbeDefaults
 from clinrag.question import NOTES, RELATIONAL
 from clinrag.sources.base import RelationalQuery, Sources
 from clinrag.sources.tokens import count_tokens
@@ -122,6 +123,19 @@ def relational_queries(questions: Sequence[WorkloadQuestion], sources: Sources) 
         codes = tuple(sources.require_graph().expand(spec.category)) if spec.category else ()
         seen.setdefault(RelationalQuery(lab=spec.relational_filter, icd_codes=codes), None)
     return list(seen)[:MAX_QUERIES]
+
+
+def probe_defaults(questions: Sequence[WorkloadQuestion], sources: Sources) -> ProbeDefaults:
+    """Defaults for the no-probes ablation, from the same queries calibrate() times:
+    the median rows of the workload's relational queries and the median ICD expansion
+    size of its categories."""
+    rows = [len(sources.require_relational().run(q).items) for q in relational_queries(questions, sources)]
+    categories = sorted({q.spec.category for q in questions if q.spec.category})
+    codes = [len(sources.require_graph().expand(c)) for c in categories]
+    return ProbeDefaults(
+        relational_rows=int(round(float(np.median(rows)))) if rows else 0,
+        graph_codes=int(round(float(np.median(codes)))) if codes else 0,
+    )
 
 
 def note_queries(questions: Sequence[WorkloadQuestion]) -> list[str]:

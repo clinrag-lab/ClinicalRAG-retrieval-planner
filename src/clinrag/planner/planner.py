@@ -11,7 +11,7 @@ from clinrag.planner.cost import CostEstimate, estimate_cost
 from clinrag.planner.enumerate import enumerate_plans
 from clinrag.planner.order import OrderDecision, candidates_to_fetch, choose_order
 from clinrag.planner.plan import Plan
-from clinrag.planner.probes import Probes, run_probes
+from clinrag.planner.probes import ProbeDefaults, Probes, default_probes, run_probes
 from clinrag.question import NOTES, RELATIONAL, QuestionSpec
 from clinrag.sources.base import Sources
 
@@ -93,15 +93,25 @@ class CostPlanner:
     relational filter with note search, apply choose_order and prune the
     filter_first/search_first variants it rules out; cost every plan; pick the
     cheapest feasible one (first in enumeration order on ties).
+
+    probe_defaults (the no-probes ablation): cost every plan with fixed defaults
+    instead of probe results; see default_probes.
     """
 
-    def __init__(self, sources: Sources, config: PlannerConfig) -> None:
+    def __init__(self, sources: Sources, config: PlannerConfig, probe_defaults: ProbeDefaults | None = None) -> None:
         self.sources = sources
         self.config = config
+        self.probe_defaults = probe_defaults
+
+    def probe(self, question: QuestionSpec) -> Probes:
+        """Probe results, or the fixed defaults when probe_defaults is set."""
+        if self.probe_defaults is not None:
+            return default_probes(question, self.sources, self.config, self.probe_defaults)
+        return run_probes(question, self.sources, self.config)
 
     def plan(self, question: QuestionSpec) -> PlanDecision:
         start = time.perf_counter()
-        probes = run_probes(question, self.sources, self.config)
+        probes = self.probe(question)
         order = self._order(question, probes)
 
         scored: list[ScoredPlan] = []

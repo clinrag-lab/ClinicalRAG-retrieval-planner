@@ -26,6 +26,7 @@ NOTE_COUNT_FOR_IDS = "note_count_for_ids"
 TOTAL_NOTES = "total_notes"
 SCOPED_NOTES = "scoped_notes"
 TRIAL_SEARCH = "trial_search"
+DEFAULTS = "defaults"  # no-probes ablation: fixed values instead of the probes above
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,26 @@ class Probes:
     graph_codes: int | None = None
     probe_ms: float = 0.0
     ran: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ProbeDefaults:
+    """Fixed stand-ins for the probe results (the no-probes ablation).
+
+    relational_rows:       rows of every relational query (median over the calibration queries).
+    graph_codes:           ICD codes of every category (median expansion size over the calibration categories).
+    matching_notes_share:  matching notes = round(total_notes * share).
+    """
+
+    relational_rows: int
+    graph_codes: int
+    matching_notes_share: float = 0.3
+
+    def __post_init__(self) -> None:
+        if self.relational_rows < 0 or self.graph_codes < 0:
+            raise ValueError("default counts must be non-negative")
+        if not 0.0 <= self.matching_notes_share <= 1.0:
+            raise ValueError("matching_notes_share must be in [0, 1]")
 
 
 def has_order_choice(question: QuestionSpec) -> bool:
@@ -130,4 +151,36 @@ def run_probes(question: QuestionSpec, sources: Sources, config: PlannerConfig) 
         graph_codes=graph_codes,
         probe_ms=(time.perf_counter() - start) * 1000.0,
         ran=tuple(ran),
+    )
+
+
+def default_probes(
+    question: QuestionSpec, sources: Sources, config: PlannerConfig, defaults: ProbeDefaults
+) -> Probes:
+    """The no-probes ablation: what run_probes returns, with fixed defaults in place of the probes.
+
+    Questions with an order choice get no graph expansion, relational count, note
+    count or trial search. Instead:
+      relational_rows     = defaults.relational_rows
+      total_notes         = notes.total_notes()  (index metadata, read in both modes)
+      matching_notes      = round(total_notes * defaults.matching_notes_share)
+      matching_admissions = matching_notes  (one indexed note per admission, as in the reference index)
+      graph_codes         = defaults.graph_codes when the question uses the graph
+      probe_scores        = ()
+    Other questions run no probes in either mode; they get exactly what run_probes
+    returns (index metadata only).
+    """
+    if not has_order_choice(question):
+        return run_probes(question, sources, config)
+    start = time.perf_counter()
+    total_notes = sources.require_notes().total_notes()
+    matching_notes = min(total_notes, round(total_notes * defaults.matching_notes_share))
+    return Probes(
+        relational_rows=defaults.relational_rows,
+        matching_admissions=matching_notes,
+        total_notes=total_notes,
+        matching_notes=matching_notes,
+        graph_codes=defaults.graph_codes if GRAPH in question.required_sources else None,
+        probe_ms=(time.perf_counter() - start) * 1000.0,
+        ran=(TOTAL_NOTES, DEFAULTS),
     )

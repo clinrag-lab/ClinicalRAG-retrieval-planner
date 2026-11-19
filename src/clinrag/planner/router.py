@@ -18,7 +18,7 @@ from clinrag.planner.classifier import threshold
 from clinrag.planner.cost import estimate_cost
 from clinrag.planner.enumerate import QUERY_ALL, query_all_plan
 from clinrag.planner.planner import CostPlanner, PlanDecision, ScoredPlan, cheapest_feasible
-from clinrag.planner.probes import run_probes
+from clinrag.planner.probes import ProbeDefaults
 from clinrag.question import ALL_SOURCES, GRAPH, NOTES, RELATIONAL, QuestionSpec
 from clinrag.sources.base import Sources
 
@@ -143,8 +143,8 @@ class OracleCostRouter:
 
     name = "oracle_cost"
 
-    def __init__(self, sources: Sources, config: PlannerConfig) -> None:
-        self.planner = CostPlanner(sources, config)
+    def __init__(self, sources: Sources, config: PlannerConfig, probe_defaults: ProbeDefaults | None = None) -> None:
+        self.planner = CostPlanner(sources, config, probe_defaults)
 
     def decide(self, question: QuestionSpec) -> PlanDecision:
         return self.planner.plan(question)
@@ -241,6 +241,7 @@ class ClassifierCostRouter:
         config: PlannerConfig,
         tau: float = 0.5,
         name: str = "classifier_cost",
+        probe_defaults: ProbeDefaults | None = None,
     ) -> None:
         if not 0.0 <= tau <= 1.0:
             raise ValueError("tau must be in [0, 1]")
@@ -249,7 +250,7 @@ class ClassifierCostRouter:
         self.config = config
         self.tau = tau
         self.name = name
-        self.planner = CostPlanner(sources, config)
+        self.planner = CostPlanner(sources, config, probe_defaults)
         self.last_classifier_ms = 0.0
 
     def decide(self, question: QuestionSpec) -> PlanDecision:
@@ -274,7 +275,7 @@ class ClassifierCostRouter:
         baseline = query_all_plan(full)
         if any(c.plan == baseline for c in decision.candidates):
             return decision
-        probes = run_probes(full, self.sources, self.config)
+        probes = self.planner.probe(full)
         scored = ScoredPlan(baseline, estimate_cost(baseline, probes, self.config))
         candidates = tuple(scored if c.plan.name == QUERY_ALL else c for c in decision.candidates)
         return replace(decision, candidates=candidates, chosen=cheapest_feasible(candidates))
