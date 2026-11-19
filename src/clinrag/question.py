@@ -28,21 +28,35 @@ _OPS: dict[str, Callable[[float, float], bool]] = {
 
 @dataclass(frozen=True)
 class StructuredFilter:
-    """A single comparison on a lab item, e.g. creatinine (itemid 50912) > 2.0."""
+    """A condition on one lab item, e.g. creatinine (itemid 50912) > 2.0.
+
+    op and threshold: both set for a comparison, or both None to match any
+    value of the item.
+    hadm_id: restrict to one admission (used by per-admission questions).
+    """
 
     itemid: int
-    op: Op
-    threshold: float
+    op: Op | None = None
+    threshold: float | None = None
+    hadm_id: int | None = None
 
     def __post_init__(self) -> None:
-        if self.op not in _OPS:
+        if (self.op is None) != (self.threshold is None):
+            raise ValueError("op and threshold must be given together")
+        if self.op is not None and self.op not in _OPS:
             raise ValueError(f"Unsupported op {self.op!r}; expected one of {sorted(_OPS)}")
 
     def matches(self, value: float | None) -> bool:
         """True if a lab value satisfies the comparison. Missing values never match."""
         if value is None:
             return False
+        if self.op is None or self.threshold is None:
+            return True
         return _OPS[self.op](value, self.threshold)
+
+    def applies_to(self, hadm_id: int) -> bool:
+        """True if rows from this admission are in scope."""
+        return self.hadm_id is None or self.hadm_id == hadm_id
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -55,6 +69,8 @@ class QuestionSpec:
     - "relational" needs a relational_filter or a category.
     - "notes" needs a note_query.
     - A relational_filter is only allowed when "relational" is required.
+    - note_hadm_id restricts the note search to one admission's notes and is
+      only allowed on notes-only questions.
     """
 
     qid: str
@@ -63,6 +79,7 @@ class QuestionSpec:
     relational_filter: StructuredFilter | None = None
     note_query: str | None = None
     category: str | None = None
+    note_hadm_id: int | None = None
     required_sources: frozenset[str]
 
     def __post_init__(self) -> None:
@@ -86,3 +103,5 @@ class QuestionSpec:
             raise ValueError(f"{self.qid}: relational_filter given but 'relational' not required")
         if NOTES in sources and not self.note_query:
             raise ValueError(f"{self.qid}: 'notes' needs a note_query")
+        if self.note_hadm_id is not None and sources != {NOTES}:
+            raise ValueError(f"{self.qid}: note_hadm_id is only for notes-only questions")

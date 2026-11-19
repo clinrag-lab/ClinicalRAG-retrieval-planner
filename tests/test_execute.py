@@ -112,3 +112,33 @@ def test_empty_filter_returns_no_notes():
     result = execute(plans_by_name(q)["relational+notes:filter_first"], sources, q, CONFIG)
     assert result.items == []
     assert result.tokens == 0
+
+
+def test_note_hadm_id_scopes_search_to_one_admission(sources):
+    q = QuestionSpec(
+        qid="b",
+        text="According to the discharge summary for admission 5, was dialysis performed?",
+        qclass="B",
+        note_query="dialysis",
+        note_hadm_id=5,
+        required_sources=frozenset({"notes"}),
+    )
+    result = execute(plans_by_name(q)["notes_only"], sources, q, CONFIG)
+
+    assert sources.notes.search_args == [(3, (5,))]
+    assert {i["hadm_id"] for i in result.items} == {5}
+    assert result.sources_queried == {"notes"}
+    assert sources.relational.calls == []
+
+
+def test_note_hadm_id_only_on_notes_only_questions():
+    with pytest.raises(ValueError, match="note_hadm_id"):
+        QuestionSpec(
+            qid="x",
+            text="t",
+            qclass="C",
+            relational_filter=HIGH,
+            note_query="dialysis",
+            note_hadm_id=5,
+            required_sources=frozenset({"relational", "notes"}),
+        )
