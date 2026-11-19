@@ -47,8 +47,15 @@ COMMANDS: dict[str, list[str]] = {
     ],
     "paraphrase-test": [
         f"{PY} clinrag.workload.paraphrase --workload-dir data/workload --out-dir data/workload/paraphrase --seed 0",
-        # p1 rows: kept from a five-router run (p1 p2_tfidf p2_bge oracle query_all) that ran out of memory
-        # in p2_bge; its results.jsonl is kept as parts/partial/results.jsonl.
+        "# p1 rows: from this five-router run, which ran out of memory in p2_bge (p1 complete, p2_tfidf 680 of 684)",
+        f"{PY} clinrag.eval.runner --sources reference --workload data/workload/paraphrase --split test "
+        "--train-workload data/workload --p2-train dev+paraphrases "
+        "--p2-model-dir outputs/runs/final-demo/paraphrase-test/models "
+        f"--routers p1 p2_tfidf p2_bge oracle query_all --config {CONFIG} --no-analysis --fig6 "
+        "--out outputs/runs/final-demo/paraphrase-test",
+        "mkdir -p outputs/runs/final-demo/paraphrase-test/parts/partial && cp outputs/runs/final-demo/paraphrase-test/"
+        "results.jsonl outputs/runs/final-demo/paraphrase-test/parts/partial/",
+        "# p2_tfidf, oracle and query_all: one router per run",
         *[
             f"{PY} clinrag.eval.runner --sources reference --workload data/workload/paraphrase --split test "
             "--train-workload data/workload --p2-train dev+paraphrases "
