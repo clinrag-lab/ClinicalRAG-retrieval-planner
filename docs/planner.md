@@ -184,6 +184,75 @@ The script trains on `dev.jsonl` only. The report, `outputs/classifier_report.js
   source and the average number of sources predicted. This is the routing
   half of the tau sweep.
 
+## Held-out phrasings
+
+Every workload question comes from a fixed template, so TF-IDF, BGE and the
+P1 rules all route the template questions perfectly. `workload/paraphrase.py`
+re-renders each question in eight phrasing families per class, so routers can
+be compared on wording they have not seen:
+
+| class | families |
+|---|---|
+| A | `A_abbrev`, `A_terse`, `A_formal`, `A_lay`, `A_draw`, `A_stay_first`, `A_chart`, `A_value` |
+| B | `B_record`, `B_natural`, `B_terse`, `B_document`, `B_notes`, `B_course`, `B_command`, `B_writeup` |
+| C | `C_implicit`, `C_terse`, `C_who`, `C_lay`, `C_records`, `C_question_first`, `C_notes`, `C_cohort` |
+| D | `D_cohort`, `D_terse`, `D_coded`, `D_history`, `D_dx`, `D_question`, `D_known`, `D_problem_list` |
+
+The families draw on:
+
+- **lab abbreviations and synonyms:** Cr, serum creatinine, kidney function
+  marker; K, K+, serum potassium; Hgb, Hb, blood count;
+- **comparison verbs:** exceeded, came in over, was elevated past, topped;
+- **ICD category synonyms:** cardiac, kidney or urinary, lung or breathing,
+  CHF, CKD, AKI, lung infection, DM, and others;
+- **implicit note cues:** for example "Was the patient anticoagulated during
+  stay {id}?", with no "discharge summary" or "mention";
+- **terse clinician forms:** for example "latest K for {id}?" and
+  "max Hgb, adm {id}".
+
+A paraphrase is rendered from the question's slots: template kind, lab,
+threshold, admission id, concept and category. The QuestionSpec slots and the
+gold answer are therefore unchanged. Only the text changes, and the qid gains
+a `_p<k>` suffix, where k is the family's index in its class. Each paraphrase
+records its `phrasing_family` and `source_qid`. Word choices inside a family
+are seeded per (seed, qid, family).
+
+`split_families(seed)` shuffles each class's families and assigns half to
+train and half to test. To write the split and the paraphrases to
+`data/workload/paraphrase/`:
+
+```
+python -m clinrag.workload.paraphrase --workload-dir data/workload --seed 0
+```
+
+The data has these splits:
+
+- **Train:** the original dev questions, plus dev questions in the train families.
+- **Evaluation:** test-template questions in the test families only. Neither
+  the template nor the phrasing appears in training.
+
+To compare the routers:
+
+```
+python -m clinrag.planner.train_classifier --workload-dir data/workload --paraphrase
+```
+
+This writes `outputs/routing_paraphrase_report.json`, covering P1 (rules) and
+P2 with tfidf and with bge (`--featurizers` picks a subset). Each router is
+scored on its actual source decision:
+
+- P1 searches notes when no rule fires.
+- P2 takes the most probable source when nothing passes tau.
+
+For each router the report contains:
+
+- per-source precision, recall and F1;
+- exact match and missed-source rate;
+- per-class exact match and missed-source rate;
+- predict latency;
+- for P2, the tau sweep from 0.1 to 0.9;
+- the five test families with the most missed sources, each with an example.
+
 ## Evidence check and fallback
 
 `check_evidence(result, question, config)` (`planner/fallback.py`) fails a
