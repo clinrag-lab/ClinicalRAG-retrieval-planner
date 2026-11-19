@@ -50,7 +50,7 @@ All numbers are from the open MIMIC-IV Clinical Database Demo (275 admissions) w
 | Cost model ranking vs measured cost | Spearman 0.86 overall, 0.93 on tokens |
 | Wrong filter order on a large index | Post-filtering loses up to 86% of recall at 13,750 notes (0.12 vs 0.83) |
 | Planning time | 0.04 to 3 ms for single-source questions, 8 to 17 ms for filter-plus-search questions |
-| Reusing one query embedding across probe and search (BGE + FAISS) | Retrieval time 57% to 62% lower, end to end about a third lower, same results |
+| Reusing one query embedding across probe and search (BGE + FAISS) | Retrieval time 57% to 62% lower for the routers that probe (43% for query-all), end to end about a third lower, same results |
 | Ablations | On the demo, the gains come from source selection and pre-filtering; removing the probes or the fallback changes recall by under 1 point |
 
 ![Tokens vs recall](docs/figures/fig1_tokens_vs_recall.png)
@@ -76,7 +76,7 @@ python -m clinrag.eval.calibrate --sources reference --workload data/workload --
 python -m clinrag.eval.runner --sources reference --workload data/workload --split test --config outputs/calibrated_config.yaml --out outputs/runs/test
 ```
 
-`docs/experiments.md` lists the exact command behind every number above.
+The exact command behind every number above is in `docs/experiments.md` (frozen demo results), `docs/results/COMPARISON.md` (BGE + FAISS runs and the query-embedding cache) and `docs/results/ABLATIONS.md` (ablations).
 
 ## Repository layout
 
@@ -105,7 +105,7 @@ docs/                design notes, experiments, figures
 - Questions come from templates, with generated paraphrases to test routing on unseen wording. They were not written by clinicians.
 - Structured slots (lab, threshold, diagnosis category) are assumed to be extracted correctly from the question.
 - On the small demo, planning overhead is comparable to retrieval time; it should be a small fraction once LLM generation time is included.
-- The selectivity-based order rule did not beat the cost model at larger index sizes; the planner uses the cost model's order.
+- The planner chooses filter order with a selectivity rule tuned on dev (filter-first when fewer than half the notes match). At larger index sizes, letting the cost model decide (or always pre-filtering) matched the better order more often, so moving the order decision into the cost model is planned.
 - On a 275-note index, the probes and the evidence-check fallback add little. The fallback only fires with dense (BGE) similarity scores, and the probes matter more as the index grows.
 
 ## Team
