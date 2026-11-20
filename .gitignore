@@ -12,6 +12,9 @@ outputs/
 *.parquet
 *.faiss
 *.npy
+*.duckdb
+*.duckdb.wal
+*.duckdb.building
 *.pkl
 
 # Python

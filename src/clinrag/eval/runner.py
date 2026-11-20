@@ -15,6 +15,9 @@ Sources:
                built by scripts/build_vector_index.py); BGE chunks, so an
                admission can own several chunks. Query embeddings go through
                a CachingEncoder, cleared before every question execution
+    duckdb     DuckDBRelationalSource over a prebuilt DuckDB file (--db, built by
+               scripts/build_duckdb.py), with the reference notes and ICD graph
+    duckdb_faiss  DuckDBRelationalSource (--db) with the FAISS notes as in faiss
 
 For each (router, question) the runner decides and executes with
 run_with_fallback --repeats times. Latency and planning overhead are the
@@ -81,6 +84,7 @@ FIXTURE_DIR = Path("tests/fixtures")
 DEMO_TABLES = Path("data/mimic-iv-demo")
 DEMO_NOTES = Path("data/generated")
 FAISS_INDEX = Path("data/faiss_index")
+DUCKDB_FILE = Path("data/clinrag.duckdb")
 BGE_MODEL = "BAAI/bge-base-en-v1.5"
 CLASSES = ("A", "B", "C", "D")
 
@@ -88,7 +92,7 @@ CLASSES = ("A", "B", "C", "D")
 # ---- set-up -----------------------------------------------------------------------------
 
 
-SOURCE_KINDS = ("fake", "reference", "faiss")
+SOURCE_KINDS = ("fake", "reference", "faiss", "duckdb", "duckdb_faiss")
 
 
 def build_sources(
@@ -98,6 +102,7 @@ def build_sources(
     index_dir: Path | None = None,
     encoder: Any = None,
     cache_queries: bool = True,
+    db_path: Path | None = None,
 ) -> Sources:
     if kind == "fake":
         return build_reference_sources(tables_dir or FIXTURE_DIR, notes_dir or FIXTURE_DIR)
@@ -105,6 +110,12 @@ def build_sources(
         return build_reference_sources(tables_dir or DEMO_TABLES, notes_dir or DEMO_NOTES)
     if kind == "faiss":
         return build_faiss_sources(tables_dir or DEMO_TABLES, index_dir or FAISS_INDEX, encoder, cache_queries)
+    if kind == "duckdb":
+        from clinrag.sources.duckdb_relational import build_duckdb_sources
+
+        return build_duckdb_sources(db_path or DUCKDB_FILE, notes_dir or DEMO_NOTES)
+    if kind == "duckdb_faiss":
+        return build_duckdb_faiss_sources(db_path or DUCKDB_FILE, index_dir or FAISS_INDEX, encoder, cache_queries)
     raise ValueError(f"unknown sources {kind!r}; expected one of {SOURCE_KINDS}")
 
 
@@ -136,6 +147,29 @@ def build_faiss_sources(
         encoder = CachingEncoder(encoder)
     relational = DemoRelationalSource.from_tables(tables_dir)
     graph = IcdGraph.from_connection(relational.con)
+    notes = FaissNotesSource(index_dir, model_name=BGE_MODEL, encoder=encoder)
+    relational.register_notes([c["note_id"] for c in notes.chunks], [int(c["hadm_id"]) for c in notes.chunks])
+    return Sources(relational=relational, notes=notes, graph=graph)
+
+
+def build_duckdb_faiss_sources(
+    db_path: Path, index_dir: Path, encoder: Any = None, cache_queries: bool = True
+) -> Sources:
+    """DuckDBRelationalSource + FaissNotesSource + IcdGraph; as build_faiss_sources, with the
+    relational store read from a prebuilt DuckDB file (scripts/build_duckdb.py)."""
+    from clinrag.sources.duckdb_relational import DuckDBRelationalSource
+    from clinrag.sources.faiss_notes import FaissNotesSource
+
+    if not (Path(index_dir) / "notes.faiss").exists():
+        raise FileNotFoundError(f"no FAISS index in {index_dir}; build it with scripts/build_vector_index.py")
+    if encoder is None:
+        from sentence_transformers import SentenceTransformer
+
+        encoder = SentenceTransformer(BGE_MODEL)
+    if cache_queries and not isinstance(encoder, CachingEncoder):
+        encoder = CachingEncoder(encoder)
+    relational = DuckDBRelationalSource(db_path)
+    graph = relational.icd_graph()
     notes = FaissNotesSource(index_dir, model_name=BGE_MODEL, encoder=encoder)
     relational.register_notes([c["note_id"] for c in notes.chunks], [int(c["hadm_id"]) for c in notes.chunks])
     return Sources(relational=relational, notes=notes, graph=graph)
@@ -414,6 +448,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tables-dir", type=Path, default=None)
     parser.add_argument("--notes-dir", type=Path, default=None)
     parser.add_argument("--index-dir", type=Path, default=None, help=f"with --sources faiss (default {FAISS_INDEX})")
+    parser.add_argument("--db", type=Path, default=None, help=f"with --sources duckdb* (default {DUCKDB_FILE})")
     parser.add_argument("--workload", type=Path, default=Path("data/workload"), help="directory with dev.jsonl and test.jsonl")
     parser.add_argument("--split", choices=["dev", "test"], default="dev")
     parser.add_argument("--routers", nargs="+", choices=ROUTERS, default=[r for r in ROUTERS if r != "p2_bge"])
@@ -447,7 +482,7 @@ def main(argv: list[str] | None = None) -> Path:
     config = load_planner_config(args.config) if args.config else PlannerConfig()
     out = args.out or Path("outputs/runs") / datetime.now().strftime("%Y%m%d-%H%M%S")
     out.mkdir(parents=True, exist_ok=True)
-    sources = build_sources(args.sources, args.tables_dir, args.notes_dir, args.index_dir)
+    sources = build_sources(args.sources, args.tables_dir, args.notes_dir, args.index_dir, db_path=args.db)
     questions = read_jsonl(args.workload / f"{args.split}.jsonl")
     if args.limit is not None:
         questions = questions[: args.limit]
