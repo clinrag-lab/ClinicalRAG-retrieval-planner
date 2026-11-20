@@ -63,9 +63,13 @@ BLOCKS: tuple[IcdCategory, ...] = (
     IcdCategory("chronic_kidney_disease", "chronic kidney disease", ("N18",), ((585, 585),), parent="renal_genitourinary"),
     IcdCategory("acute_kidney_injury", "acute kidney injury", ("N17",), ((584, 584),), parent="renal_genitourinary"),
     IcdCategory("pneumonia", "pneumonia", _prefix_range("J", 12, 18), ((480, 486),), parent="respiratory"),
-    IcdCategory("copd", "COPD", ("J44",), ((491, 492), (496, 496)), parent="respiratory"),
-    IcdCategory("diabetes", "diabetes", _prefix_range("E", 8, 13), ((250, 250),), parent="endocrine"),
-    IcdCategory("hypothyroidism", "hypothyroidism", ("E03",), ((244, 244),), parent="endocrine"),
+    # Chronic bronchitis and emphysema in both versions: ICD-9 491-492 map to ICD-10 J41-J43.
+    IcdCategory("copd", "COPD", _prefix_range("J", 41, 44), ((491, 492), (496, 496)), parent="respiratory"),
+    # Secondary diabetes in both versions: ICD-10 E08-E09 map to ICD-9 249.
+    IcdCategory("diabetes", "diabetes", _prefix_range("E", 8, 13), ((249, 250),), parent="endocrine"),
+    # Congenital, iodine-deficiency and postprocedural hypothyroidism in both versions:
+    # ICD-10 E03.0-E03.1 map to ICD-9 243, and ICD-9 244.0-244.2 to ICD-10 E02 and E89.0.
+    IcdCategory("hypothyroidism", "hypothyroidism", ("E02", "E03", "E890"), ((243, 244),), parent="endocrine"),
 )
 
 # Every category the graph can expand: chapters first, then blocks.
