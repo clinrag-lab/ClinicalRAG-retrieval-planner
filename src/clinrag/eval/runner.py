@@ -246,7 +246,7 @@ def run_question(
     result = replace(result, latency_ms=statistics.median(latencies), planning_overhead_ms=statistics.median(overheads))
     score = retrieval_score(question, run.items, config.top_k)
 
-    answerer = answerer or NullAnswerer()
+
     answer, prompt_tokens, answer_ms = answerer.answer(spec, run.items)
     answer_score = None if answer is None else score_answer(question, answer).value
 
@@ -464,9 +464,13 @@ def main(argv: list[str] | None = None) -> Path:
         encoding="utf-8",
     )
     classifiers = load_or_train_classifiers(args.routers, train_workload, args.p2_train, args.p2_model_dir)
+    from clinrag.llm.llama import LlamaAnswerer
+
+    answerer = LlamaAnswerer()
+
     records = run_experiment(
         sources, questions, args.routers, config, train_workload, out, args.tau, args.repeats,
-        progress=print, classifiers=classifiers, no_fallback=args.no_fallback, probe_defaults=probe_defaults,
+        progress=print, classifiers=classifiers, no_fallback=args.no_fallback, probe_defaults=probe_defaults, answerer=answerer,
     )
     if args.fig6:
         from clinrag.eval.analysis import fig_paraphrase_e2e
