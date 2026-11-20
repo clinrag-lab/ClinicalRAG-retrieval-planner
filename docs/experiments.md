@@ -182,6 +182,7 @@ with `--no-analysis`.
 | `fig3_tau_sweep.png` | P2 TF-IDF tau vs missed-source rate and mean tokens (two axes) |
 | `fig4_overhead.png` | planning overhead stacked on retrieval latency per router |
 | `fig5_scale.png` | notes in the index (log) vs the share of C/D questions where filter_first is the better order, and how often the rule and the cost model pick it (`scale_study`) |
+| `fig8_accuracy_vs_tokens.png` | mean evidence tokens vs answer accuracy per router, template and paraphrase test splits of the v2 run (`sol_v2 fig8`) |
 
 Each title is computed from the data and states the takeaway.
 
@@ -235,6 +236,57 @@ This writes `SUMMARY.md` and copies every figure into `figures/`. P2 with
 BGE embeddings is evaluated for routing only: the end-to-end run with BGE
 exceeded laptop memory. `outputs/` is git-ignored, so the tag pins the code
 and the commands, not the result files.
+
+## v2 accuracy run (Sol)
+
+The v2 results (git tag `results-demo-v2`, `docs/results/V2_LLM.md`) add the
+Llama-3.1-8B-Instruct answer step (bf16, one A100-80GB) on workload v2. They
+were run on ASU's Sol cluster as Slurm job 2110541 with the scripts in
+`scripts/sol/` (step-by-step guide in `scripts/sol/README.md`):
+
+| script | what it does |
+|---|---|
+| `setup_env.sh` | conda env on scratch, torch from the CUDA 12.1 wheels, `pip install -e ".[dev,llm]"`, then `pip check` and a check that transformers sees torch |
+| `prepare_data.sh` | demo download, v2 notes, workload and paraphrases (seed 0), counts and SHA-256 compared with the laptop's |
+| `run_v2.sbatch` | the job: one runner command per router, the paraphrase merge, `SUMMARY.md`; resumable |
+| `common.sh` | shared settings (env path, `HF_HOME`, caches on scratch) and `activate_env` |
+
+The data (`prepare_data.sh`):
+
+```
+bash scripts/download_demo.sh
+python -m clinrag.workload.notes_gen --tables-dir data/mimic-iv-demo --out-dir data/generated_v2 --seed 0
+python -m clinrag.workload.build --tables-dir data/mimic-iv-demo --notes-dir data/generated_v2     --out-dir data/workload_v2 --seed 0
+python -m clinrag.workload.paraphrase --workload-dir data/workload_v2 --out-dir data/workload_v2/paraphrase --seed 0
+```
+
+The runs (`run_v2.sbatch`, copied from `SUMMARY.md`). Template test split, one
+command per router with `<router>` in oracle, p1, p2_tfidf, query_all,
+always_filter_first, always_search_first:
+
+```
+python -m clinrag.eval.runner --sources reference --tables-dir data/mimic-iv-demo --notes-dir data/generated_v2     --answerer llama --llm-dtype bf16 --config config/results-demo-v1.yaml --split test --no-analysis     --routers <router> --out outputs/runs/v2/template-test/parts/<router> --workload data/workload_v2
+```
+
+Paraphrase test split, `<router>` in p1, p2_tfidf, oracle, query_all (P2 trained
+on v2 dev plus train-family paraphrases):
+
+```
+python -m clinrag.eval.runner --sources reference --tables-dir data/mimic-iv-demo --notes-dir data/generated_v2     --answerer llama --llm-dtype bf16 --config config/results-demo-v1.yaml --split test --no-analysis     --routers <router> --out outputs/runs/v2/paraphrase-test/parts/<router>     --workload data/workload_v2/paraphrase --train-workload data/workload_v2 --p2-train dev+paraphrases     --p2-model-dir outputs/runs/v2/paraphrase-test/models
+```
+
+Merge, summary and figure:
+
+```
+python -m clinrag.eval.freeze --merge p1=outputs/runs/v2/paraphrase-test/parts/p1     p2_tfidf=outputs/runs/v2/paraphrase-test/parts/p2_tfidf oracle=outputs/runs/v2/paraphrase-test/parts/oracle     query_all=outputs/runs/v2/paraphrase-test/parts/query_all     --questions data/workload_v2/paraphrase/test.jsonl --into outputs/runs/v2/paraphrase-test
+python -m clinrag.eval.sol_v2 summary --run outputs/runs/v2
+python -m clinrag.eval.sol_v2 fig8 --run outputs/runs/v2 --out docs/figures/fig8_accuracy_vs_tokens.png
+```
+
+`fig8` reads the "all" row of every `parts/<router>/results.csv`, so it can be
+redrawn on any machine that has the job's `outputs/runs/v2/`. Every router
+sends at most 8,192 evidence tokens to the LLM (`max_context_tokens`), and a
+null or unparsed answer scores 0.
 
 ## Relational probe cost vs. data size
 

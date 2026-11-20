@@ -39,20 +39,23 @@ Key ideas:
 
 ## Results
 
-All numbers are from the open MIMIC-IV Clinical Database Demo (275 admissions) with generated discharge notes, on a held-out test split. Tuning and training used the dev split only. Frozen as tag `results-demo-v1`.
+All numbers are from the open MIMIC-IV Clinical Database Demo (275 admissions) with generated discharge notes, on a held-out test split. Tuning and training used the dev split only. Rows without a tag are from the v2 run, frozen as tag `results-demo-v2`: workload v2, Llama-3.1-8B-Instruct (bf16) answering from the retrieved evidence, an 8,192-token context budget, unparsed answers scored as wrong (details in `docs/results/V2_LLM.md`). Rows marked (results-demo-v1) are from the first freeze, tag `results-demo-v1`, and were not rerun.
 
 | Finding | Result |
 |---|---|
-| Tokens sent to the LLM vs querying every source | 78% fewer (719 vs 3,233 per question), with recall 0.91 vs 0.63 |
-| Same comparison with a BGE + FAISS notes index | 73% fewer (840 vs 3,088), with recall 0.91 vs 0.68 |
-| Source routing on question wordings never seen in training | 89% exact (TF-IDF) and 94% (BGE) vs 41% for keyword rules |
-| End to end on unseen wordings | Recall 0.87 vs 0.46 for keyword rules, at 57% fewer tokens |
-| Cost model ranking vs measured cost | Spearman 0.86 overall, 0.93 on tokens |
-| Wrong filter order on a large index | Post-filtering loses up to 86% of recall at 13,750 notes (0.12 vs 0.83) |
-| Planning time | 0.04 to 3 ms for single-source questions, 8 to 17 ms for filter-plus-search questions |
-| Reusing one query embedding across probe and search (BGE + FAISS) | Retrieval time 57% to 62% lower for the cost-based and fixed-order routers (43% for query-all), end to end about a third lower, same results |
-| Ablations | On the demo, the gains come from source selection and pre-filtering; removing the probes or the fallback changes recall by under 1 point |
+| Answer accuracy vs querying every source | 0.67 vs 0.32 with Llama-3.1-8B-Instruct, the same as the oracle route (0.67) |
+| Tokens sent to the LLM vs querying every source | 78% fewer (693 vs 3,202 per question), with recall 0.91 vs 0.63 |
+| Answer accuracy on question wordings never seen in training | 0.61 for the classifier planner vs 0.44 for keyword rules and 0.41 for query-all (oracle route 0.65) |
+| End to end on unseen wordings | Recall 0.88 vs 0.47 for keyword rules, at 57% fewer tokens (741 vs 1,742) |
+| Same token comparison with a BGE + FAISS notes index (results-demo-v1) | 73% fewer (840 vs 3,088), with recall 0.91 vs 0.68 |
+| Source routing on unseen wordings (results-demo-v1) | 89% exact (TF-IDF) and 94% (BGE) vs 41% for keyword rules |
+| Cost model ranking vs measured cost (results-demo-v1) | Spearman 0.86 overall, 0.93 on tokens |
+| Wrong filter order on a large index (results-demo-v1) | Post-filtering loses up to 86% of recall at 13,750 notes (0.12 vs 0.83) |
+| Planning time (results-demo-v1) | 0.04 to 3 ms for single-source questions, 8 to 17 ms for filter-plus-search questions |
+| Reusing one query embedding across probe and search, BGE + FAISS (results-demo-v1) | Retrieval time 57% to 62% lower for the cost-based and fixed-order routers (43% for query-all), end to end about a third lower, same results |
+| Ablations (results-demo-v1) | On the demo, the gains come from source selection and pre-filtering; removing the probes or the fallback changes recall by under 1 point |
 
+![Answer accuracy vs evidence tokens](docs/figures/fig8_accuracy_vs_tokens.png)
 ![Tokens vs recall](docs/figures/fig1_tokens_vs_recall.png)
 ![End to end on unseen phrasings](docs/figures/fig6_paraphrase_e2e.png)
 ![Filter order across index sizes](docs/figures/fig5_scale.png)
@@ -76,7 +79,7 @@ python -m clinrag.eval.calibrate --sources reference --workload data/workload --
 python -m clinrag.eval.runner --sources reference --workload data/workload --split test --config outputs/calibrated_config.yaml --out outputs/runs/test
 ```
 
-The exact command behind every number above is in `docs/experiments.md` (frozen demo results), `docs/results/COMPARISON.md` (BGE + FAISS runs and the query-embedding cache) and `docs/results/ABLATIONS.md` (ablations).
+The exact command behind every number above is in `docs/results/V2_LLM.md` and `scripts/sol/README.md` (v2 run on Sol), `docs/experiments.md` (frozen demo results), `docs/results/COMPARISON.md` (BGE + FAISS runs and the query-embedding cache) and `docs/results/ABLATIONS.md` (ablations).
 
 ## Repository layout
 
@@ -105,6 +108,7 @@ docs/                design notes, experiments, figures
 - Questions come from templates, with generated paraphrases to test routing on unseen wording. They were not written by clinicians.
 - Structured slots (lab, threshold, diagnosis category) are assumed to be extracted correctly from the question.
 - On the small demo, planning overhead is comparable to retrieval time; it should be a small fraction once LLM generation time is included.
+- Cohort-listing questions (classes C and D) score only 0.29 to 0.37 answer accuracy even with the oracle route, and no router does better (query-all: 0.07 to 0.10). The LLM sees only the top 5 notes (`top_k: 5`), while the gold answer lists a median of 17 (C) and 26 (D) admissions, up to about 100.
 - The planner chooses filter order with a selectivity rule tuned on dev (filter-first when fewer than half the notes match). At larger index sizes, letting the cost model decide (or always pre-filtering) matched the better order more often, so moving the order decision into the cost model is planned.
 - On a 275-note index, the probes and the evidence-check fallback add little. The fallback only fires with dense (BGE) similarity scores, and the probes matter more as the index grows.
 
