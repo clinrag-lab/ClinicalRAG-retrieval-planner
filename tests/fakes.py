@@ -2,12 +2,14 @@
 
 No embeddings or randomness: every note has a fixed similarity score, and search
 ignores the query text. Each fake records the operations called on it in .calls.
+FakeAnswerer stands in for the LLM: it returns canned output strings.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from clinrag.sources.base import GraphSource, NotesSource, RelationalQuery, RelationalSource, SourceResult
 from clinrag.sources.tokens import count_tokens
@@ -129,3 +131,23 @@ def grid_notes(n_admissions: int, notes_per_admission: int, text: str = "note te
 def creatinine_labs(n_admissions: int, high: set[int]) -> list[tuple[int, int, float]]:
     """One creatinine row per admission: 3.0 for admissions in high, 1.0 otherwise."""
     return [(h, CREATININE, 3.0 if h in high else 1.0) for h in range(1, n_admissions + 1)]
+
+
+class FakeAnswerer:
+    """An answerer without a model: canned raw output per qid, else default.
+
+    calls records (qid, template_id, evidence items) for each question asked.
+    prompt_tokens is the count_tokens sum of the evidence it was given.
+    """
+
+    name = "fake"
+
+    def __init__(self, outputs: dict[str, Any] | None = None, default: Any = '{"answer": null}') -> None:
+        self.outputs = dict(outputs or {})
+        self.default = default
+        self.calls: list[tuple[str, str | None, list[dict[str, Any]]]] = []
+
+    def answer(self, question, evidence_items, template_id=None):
+        self.calls.append((question.qid, template_id, list(evidence_items)))
+        prompt_tokens = sum(count_tokens(item["text"]) for item in evidence_items)
+        return self.outputs.get(question.qid, self.default), prompt_tokens, 0.0

@@ -53,5 +53,10 @@ min_similarity: 0.3
 min_surviving_notes: 1
 max_fallbacks: 2
 
+# Evidence budget for the answer step, in tokens (count_tokens). Evidence is
+# sent in plan order until the next item would exceed it; the same budget
+# applies to every router.
+max_context_tokens: 8192
+
 # Where run outputs are written (git-ignored).
 output_dir: outputs/

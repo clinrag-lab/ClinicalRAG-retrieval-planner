@@ -1,20 +1,16 @@
 
-"""Llama-3.1-8B-Instruct answerer for ClinicalRAG."""
+"""Llama-3.1-8B-Instruct answerer for ClinicalRAG.
+
+torch and transformers are imported when a LlamaAnswerer is created, not when
+this module is imported.
+"""
 
 from __future__ import annotations
 
 import json
-import re
 import time
 from collections.abc import Sequence
 from typing import Any
-
-import torch
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    BitsAndBytesConfig,
-)
 
 from clinrag.question import QuestionSpec
 
@@ -33,6 +29,9 @@ class LlamaAnswerer:
     ):
         if dtype not in ("bf16", "4bit"):
             raise ValueError(f"dtype must be 'bf16' or '4bit', got {dtype!r}")
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
         self.max_new_tokens = max_new_tokens
         self.max_evidence_tokens = max_evidence_tokens
 
@@ -119,62 +118,17 @@ class LlamaAnswerer:
 
         return "list"
 
-    def _parse_answer(self, text: str, answer_type: str) -> Any:
-        """Convert generated text into a scorable Python value."""
-
-        text = text.strip()
-
-        # Prefer the requested JSON format.
-        try:
-            result = json.loads(text)
-            value = result.get("answer") if isinstance(result, dict) else result
-        except json.JSONDecodeError:
-            return None
-
-        if value is None:
-            return None
-
-        if answer_type == "number":
-            if isinstance(value, bool):
-                return None
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                return None
-
-        if answer_type == "yesno":
-            if isinstance(value, bool):
-                return int(value)
-
-            if isinstance(value, (int, float)) and value in (0, 1):
-                return int(value)
-
-            if isinstance(value, str):
-                normalized = value.strip().lower()
-                if normalized in ("yes", "true", "1"):
-                    return 1
-                if normalized in ("no", "false", "0"):
-                    return 0
-
-            return None
-
-        if answer_type == "list":
-            if not isinstance(value, list):
-                return None
-
-            try:
-                return [int(x) for x in value]
-            except (TypeError, ValueError):
-                return None
-
-        return None
-
     def answer(
         self,
         question: QuestionSpec,
         evidence_items: Sequence[dict[str, Any]],
+        template_id: str | None = None,
     ) -> tuple[Any, int, float]:
-        """Return (answer, prompt_tokens, latency_ms)."""
+        """Return (generated text, prompt_tokens, latency_ms).
+
+        The text is parsed and scored by the caller (clinrag.eval.parse).
+        """
+        import torch
 
         start = time.perf_counter()
 
@@ -249,8 +203,6 @@ class LlamaAnswerer:
             clean_up_tokenization_spaces=False,
         )
 
-        answer = self._parse_answer(generated, answer_type)
-
         latency_ms = (time.perf_counter() - start) * 1000
 
-        return answer, prompt_tokens, latency_ms
+        return generated, prompt_tokens, latency_ms
