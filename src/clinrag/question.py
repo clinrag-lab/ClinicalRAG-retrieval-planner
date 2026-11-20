@@ -8,6 +8,8 @@ from typing import Callable, Literal
 
 QClass = Literal["A", "B", "C", "D"]
 Op = Literal["<", "<=", ">", ">=", "=", "!="]
+Agg = Literal["latest", "max"]
+AGGS: frozenset[str] = frozenset({"latest", "max"})
 
 RELATIONAL = "relational"
 NOTES = "notes"
@@ -33,18 +35,27 @@ class StructuredFilter:
     op and threshold: both set for a comparison, or both None to match any
     value of the item.
     hadm_id: restrict to one admission (used by per-admission questions).
+    agg: reduce the admission's matching rows to the one row that answers the
+         question: "latest" keeps the newest row (greatest charttime), "max" the
+         row with the highest value. Needs hadm_id. None returns every matching row.
     """
 
     itemid: int
     op: Op | None = None
     threshold: float | None = None
     hadm_id: int | None = None
+    agg: Agg | None = None
 
     def __post_init__(self) -> None:
         if (self.op is None) != (self.threshold is None):
             raise ValueError("op and threshold must be given together")
         if self.op is not None and self.op not in _OPS:
             raise ValueError(f"Unsupported op {self.op!r}; expected one of {sorted(_OPS)}")
+        if self.agg is not None:
+            if self.agg not in AGGS:
+                raise ValueError(f"Unsupported agg {self.agg!r}; expected one of {sorted(AGGS)}")
+            if self.hadm_id is None:
+                raise ValueError("agg needs hadm_id: it picks one row of one admission")
 
     def matches(self, value: float | None) -> bool:
         """True if a lab value satisfies the comparison. Missing values never match."""

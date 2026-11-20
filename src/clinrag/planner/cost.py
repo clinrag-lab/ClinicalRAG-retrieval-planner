@@ -71,13 +71,17 @@ def relational_step_cost(step: RelationalFilter, probes: Probes, config: Planner
     """Relational query.
 
     latency = relational_fixed_ms + relational_ms
-    rows    = relational_rows (0 if not probed: a lower bound)
+    rows    = relational_rows (0 if not probed: a lower bound);
+              with an aggregate (filter.agg) the source returns one row, so 1
+              (or the probed count if that is 0)
     tokens  = rows * avg_tokens_per_row if the rows are evidence, else 0
     """
     # Questions without an order choice skip the relational count (lazy probes):
     # their rows are unknown and cost no tokens here, a lower bound.
     unprobed = probes.relational_rows is None
     rows = 0 if unprobed else probes.relational_rows
+    if step.filter is not None and step.filter.agg is not None:
+        rows = 1 if unprobed else min(rows, 1)
     tokens = rows * config.avg_tokens_per_row if step.as_evidence else 0.0
     return ProbeEstimate(
         est_rows=rows,

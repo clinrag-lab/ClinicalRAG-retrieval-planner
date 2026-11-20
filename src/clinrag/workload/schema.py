@@ -41,7 +41,7 @@ def question_to_dict(q: WorkloadQuestion) -> dict[str, Any]:
         "qclass": s.qclass,
         "relational_filter": None
         if f is None
-        else {"itemid": f.itemid, "op": f.op, "threshold": f.threshold, "hadm_id": f.hadm_id},
+        else {"itemid": f.itemid, "op": f.op, "threshold": f.threshold, "hadm_id": f.hadm_id, "agg": f.agg},
         "note_query": s.note_query,
         "category": s.category,
         "note_hadm_id": s.note_hadm_id,
@@ -50,8 +50,19 @@ def question_to_dict(q: WorkloadQuestion) -> dict[str, Any]:
     }
 
 
+def template_agg(template_id: str) -> str | None:
+    """The aggregation a class A template asks for: latest, max, or None (ever above T is a predicate)."""
+    for agg in ("latest", "max"):
+        if template_id.startswith(f"A_{agg}_"):
+            return agg
+    return None
+
+
 def question_from_dict(d: dict[str, Any]) -> WorkloadQuestion:
+    """Workload files written before filters had agg get it from the template id."""
     f = d.get("relational_filter")
+    if f is not None and "agg" not in f:
+        f = {**f, "agg": template_agg(str(d["gold"].get("template_id", "")))}
     spec = QuestionSpec(
         qid=d["qid"],
         text=d["text"],
