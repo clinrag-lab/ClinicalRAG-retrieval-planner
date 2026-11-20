@@ -46,6 +46,13 @@ GRAPH_TABLE = f"{DB_ALIAS}.dx_codes"
 
 _SQL_OPS = {"<": "<", "<=": "<=", ">": ">", ">=": ">=", "=": "=", "!=": "<>"}
 
+# Row order of a lab query by StructuredFilter.agg, as in DemoRelationalSource. An aggregate keeps one row.
+_LAB_ORDER = {
+    None: "ORDER BY l.hadm_id, l.charttime, l.labevent_id",
+    "latest": "ORDER BY l.charttime DESC, l.labevent_id DESC LIMIT 1",
+    "max": "ORDER BY l.valuenum DESC, l.charttime DESC, l.labevent_id DESC LIMIT 1",
+}
+
 # Column types of the CSV columns the build reads; every other column is dropped.
 _CSV_TYPES = {
     "admissions": {"subject_id": "BIGINT", "hadm_id": "BIGINT"},
@@ -234,11 +241,15 @@ class DuckDBRelationalSource(RelationalSource):
       lab.hadm_id when set;
     - icd_codes: version-qualified ("10:I509"), matched on (icd_version, icd_code)
       through the stored dx_key;
+    - lab.agg: of those rows, exactly one (none if nothing matches): "latest"
+      the row with the greatest charttime, "max" the row with the highest
+      valuenum; ties go to the later charttime, then the higher labevent_id.
+      count() is then at most 1;
     - lab and codes: lab rows of admissions with at least one of the codes;
     - codes only: one row per matching diagnosis row.
 
-    Lab items carry hadm_id, text, itemid, valuenum, charttime; diagnosis items
-    carry hadm_id, text, icd_code, icd_version.
+    Lab items carry hadm_id, text, itemid, label, valuenum, unit, charttime;
+    diagnosis items carry hadm_id, text, icd_code, icd_version.
     """
 
     def __init__(self, db_path: str | Path) -> None:
@@ -304,7 +315,8 @@ class DuckDBRelationalSource(RelationalSource):
 
     def count(self, query: RelationalQuery) -> int:
         sql, params, _ = self._from_where(query)
-        return int(self._rows(f"SELECT count(*) {sql}", params)[0][0])
+        n = int(self._rows(f"SELECT count(*) {sql}", params)[0][0])
+        return min(n, 1) if query.lab is not None and query.lab.agg is not None else n
 
     def matching_ids(self, query: RelationalQuery) -> list[int]:
         sql, params, is_lab = self._from_where(query)
@@ -369,9 +381,9 @@ class DuckDBRelationalSource(RelationalSource):
         sql, params, is_lab = self._from_where(query)
         items: list[dict[str, Any]] = []
         if is_lab:
+            assert query.lab is not None
             rows = self._rows(
-                f"SELECT l.hadm_id, l.itemid, l.valuenum, l.valueuom, l.charttime {sql} "
-                "ORDER BY l.hadm_id, l.charttime, l.labevent_id",
+                f"SELECT l.hadm_id, l.itemid, l.valuenum, l.valueuom, l.charttime {sql} {_LAB_ORDER[query.lab.agg]}",
                 params,
             )
             for hadm, itemid, value, uom, charttime in rows:
@@ -380,7 +392,9 @@ class DuckDBRelationalSource(RelationalSource):
                 items.append({
                     "hadm_id": int(hadm),
                     "itemid": int(itemid),
+                    "label": label,
                     "valuenum": float(value),
+                    "unit": str(uom) if uom else "",
                     "charttime": str(charttime),
                     "text": f"Admission {hadm}: {label} {value:g}{unit} at {charttime}",
                 })
