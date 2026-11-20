@@ -5,6 +5,7 @@ Usage:
     python -m clinrag.eval.sol_v2 complete --part DIR --router p1 --questions data/workload_v2/test.jsonl \\
         --answerer llama --llm-dtype bf16
     python -m clinrag.eval.sol_v2 summary --run outputs/runs/v2
+    python -m clinrag.eval.sol_v2 fig8 --run outputs/runs/v2 --out docs/figures/fig8_accuracy_vs_tokens.png
 
 counts    question count, per-class counts and SHA-256 of each question file, to compare two machines.
 complete  exit 0 if DIR holds a finished one-router run: results.csv written (the runner writes it
@@ -15,6 +16,8 @@ summary   merge the template-test parts into <run>/template-test/results.{jsonl,
           paraphrase-test rows merged by `clinrag.eval.freeze --merge`, and write <run>/SUMMARY.md:
           recall, tokens, latency, overhead, answer accuracy, parse failure rate and truncated rate
           per router and class.
+fig8      answer accuracy vs mean evidence tokens per router, one panel for the template test split
+          and one for the paraphrase test split, from the "all" row of each parts/<router>/results.csv.
 
 Layout under --run (written by run_v2.sbatch):
     template-test/parts/<router>/     one runner run per router on the template test split
@@ -26,6 +29,7 @@ Layout under --run (written by run_v2.sbatch):
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -206,6 +210,115 @@ def summary(
     return path
 
 
+# ---- fig8 --------------------------------------------------------------------------------
+
+FIG8_PANELS: tuple[tuple[str, str], ...] = (
+    ("template-test", "Template test"),
+    ("paraphrase-test", "Paraphrase test (held-out phrasings)"),
+)
+
+
+def overall_points(part_dir: Path, routers: Sequence[str]) -> list[dict[str, Any]]:
+    """(router, n, mean_tokens, answer_accuracy) from the "all" row of each <part_dir>/<router>/results.csv."""
+    points = []
+    for router in routers:
+        path = Path(part_dir) / router / "results.csv"
+        with path.open(newline="", encoding="utf-8") as f:
+            rows = [r for r in csv.DictReader(f) if r["router"] == router and r["qclass"] == "all"]
+        if len(rows) != 1:
+            raise ValueError(f"{path}: expected one 'all' row for {router}, found {len(rows)}")
+        row = rows[0]
+        if row.get("answer_accuracy") in (None, ""):
+            raise ValueError(f"{path}: no answer_accuracy; was the run made with an answerer?")
+        points.append({"router": router, "n": int(row["n"]), "mean_tokens": float(row["mean_tokens"]),
+                       "answer_accuracy": float(row["answer_accuracy"])})
+    return points
+
+
+def _label_groups(points: Sequence[dict[str, Any]], x_tol: float, y_tol: float) -> list[list[dict[str, Any]]]:
+    """Routers whose points nearly coincide, so they share one label instead of overprinting."""
+    groups: list[list[dict[str, Any]]] = []
+    for p in points:
+        for g in groups:
+            if abs(g[0]["mean_tokens"] - p["mean_tokens"]) <= x_tol and abs(
+                    g[0]["answer_accuracy"] - p["answer_accuracy"]) <= y_tol:
+                g.append(p)
+                break
+        else:
+            groups.append([p])
+    return groups
+
+
+def fig8_title(panels: Sequence[Sequence[dict[str, Any]]], planner: str = "p2_tfidf",
+               baseline: str = "query_all") -> str:
+    """Takeaway from the data: the planner's accuracy and token saving vs the baseline, per panel."""
+    parts = []
+    for points in panels:
+        by = {p["router"]: p for p in points}
+        if planner not in by or baseline not in by:
+            continue
+        pl, bl = by[planner], by[baseline]
+        fewer = 1 - pl["mean_tokens"] / bl["mean_tokens"]
+        parts.append(f"{pl['answer_accuracy']:.2f} vs {bl['answer_accuracy']:.2f} at {fewer:.0%} fewer tokens")
+    verdict = "answers more questions correctly than" if all(
+        {p["router"]: p for p in pts}[planner]["answer_accuracy"] > {p["router"]: p for p in pts}[baseline][
+            "answer_accuracy"] for pts in panels if {planner, baseline} <= {p["router"] for p in pts}
+    ) else "does not beat"
+    return f"The {planner} planner {verdict} {baseline} with far less evidence\n({'; '.join(parts)})"
+
+
+def fig8(run: Path, path: Path, template_routers: Sequence[str] = TEMPLATE_ROUTERS,
+         paraphrase_routers: Sequence[str] = PARAPHRASE_ROUTERS) -> Path:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    run = Path(run)
+    routers = {"template-test": template_routers, "paraphrase-test": paraphrase_routers}
+    panels = [overall_points(run / split / "parts", routers[split]) for split, _ in FIG8_PANELS]
+    all_routers = list(dict.fromkeys(p["router"] for pts in panels for p in pts))
+    colors = {r: f"C{i}" for i, r in enumerate(all_routers)}
+    x_max = max(p["mean_tokens"] for pts in panels for p in pts) * 1.15
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5.5), sharey=True)
+    for ax, (split, label), points in zip(axes, FIG8_PANELS, panels):
+        for p in points:
+            ax.scatter(p["mean_tokens"], p["answer_accuracy"], s=60, color=colors[p["router"]], zorder=3)
+        groups = _label_groups(points, x_tol=0.03 * x_max, y_tol=0.02)
+        for group in groups:
+            p = group[0]
+            tokens = sorted(q["mean_tokens"] for q in group)
+            accs = sorted(q["answer_accuracy"] for q in group)
+            tok = f"{tokens[0]:,.0f}" if round(tokens[0]) == round(tokens[-1]) else f"{tokens[0]:,.0f}-{tokens[-1]:,.0f}"
+            acc = f"{accs[0]:.2f}" if f"{accs[0]:.2f}" == f"{accs[-1]:.2f}" else f"{accs[0]:.2f}-{accs[-1]:.2f}"
+            names = [q["router"] for q in group]
+            name_lines = "\n".join(", ".join(names[i:i + 2]) for i in range(0, len(names), 2))
+            text = f"{name_lines}\n{acc} accuracy, {tok} tokens"
+            # A label goes below its point when another labeled point sits just above it, and to the
+            # below-left of points in the right third, so labels neither overprint nor leave the axes.
+            below = any(g is not group and abs(g[0]["mean_tokens"] - p["mean_tokens"]) < 0.2 * x_max
+                        and 0 < g[0]["answer_accuracy"] - p["answer_accuracy"] < 0.12 for g in groups)
+            left = p["mean_tokens"] > 0.66 * x_max
+            below = below or left
+            ax.annotate(text, (p["mean_tokens"], p["answer_accuracy"]),
+                        xytext=(-8 if left else 8, -8 if below else 8), textcoords="offset points", fontsize=8,
+                        ha="right" if left else "left", va="top" if below else "bottom")
+        ax.set_title(f"{label}, {points[0]['n']} questions", fontsize=10)
+        ax.set_xlabel("Mean evidence tokens per question (tokens)")
+        ax.set_xlim(0, x_max)
+        ax.set_ylim(0, 1)
+        ax.grid(alpha=0.3)
+    axes[0].set_ylabel("Answer accuracy (mean answer score, 0 to 1)")
+    fig.suptitle(fig8_title(panels), fontsize=10)
+    fig.tight_layout()
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
+
+
 # ---- CLI ---------------------------------------------------------------------------------
 
 
@@ -226,6 +339,11 @@ def main(argv: list[str] | None = None) -> int:
     p_summary.add_argument("--paraphrase-questions", type=Path, default=PARAPHRASE_QUESTIONS)
     p_summary.add_argument("--template-routers", nargs="+", default=list(TEMPLATE_ROUTERS))
     p_summary.add_argument("--paraphrase-routers", nargs="+", default=list(PARAPHRASE_ROUTERS))
+    p_fig8 = sub.add_parser("fig8", help="answer accuracy vs evidence tokens per router, template and paraphrase")
+    p_fig8.add_argument("--run", type=Path, default=Path("outputs/runs/v2"))
+    p_fig8.add_argument("--out", type=Path, default=Path("docs/figures/fig8_accuracy_vs_tokens.png"))
+    p_fig8.add_argument("--template-routers", nargs="+", default=list(TEMPLATE_ROUTERS))
+    p_fig8.add_argument("--paraphrase-routers", nargs="+", default=list(PARAPHRASE_ROUTERS))
     args = parser.parse_args(argv)
 
     if args.command == "counts":
@@ -236,6 +354,9 @@ def main(argv: list[str] | None = None) -> int:
         reason = check_part(args.part, args.router, args.questions, args.answerer, args.llm_dtype)
         print(f"{args.router}: complete" if reason is None else f"{args.router}: not complete: {reason}")
         return 0 if reason is None else 1
+    if args.command == "fig8":
+        print(fig8(args.run, args.out, args.template_routers, args.paraphrase_routers))
+        return 0
     path = summary(args.run, args.template_questions, args.paraphrase_questions, args.template_routers,
                    args.paraphrase_routers)
     print(path)

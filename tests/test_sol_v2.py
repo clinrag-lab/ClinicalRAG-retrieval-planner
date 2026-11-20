@@ -104,3 +104,44 @@ def test_summary_refuses_an_incomplete_router(tmp_path, workload):  # noqa: F811
         (freeze_into / "parts" / "oracle" / "results.jsonl").read_text(encoding="utf-8"), encoding="utf-8")
     with pytest.raises(ValueError, match="oracle"):
         sol_v2.summary(run, questions, questions, ["oracle"], ["oracle"])
+
+
+def write_overall(part_dir, router, tokens, accuracy, n=10):
+    """A results.csv with a per-class row and the "all" row fig8 reads."""
+    path = part_dir / router / "results.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("router,qclass,n,mean_tokens,answer_accuracy\n"
+                    f"{router},A,{n // 2},1.0,1.0\n"
+                    f"{router},all,{n},{tokens},{accuracy}\n", encoding="utf-8")
+
+
+def test_fig8_reads_the_overall_rows_and_states_the_takeaway(tmp_path):
+    run = tmp_path / "v2"
+    for split, p2_acc in (("template-test", 0.7), ("paraphrase-test", 0.6)):
+        write_overall(run / split / "parts", "p2_tfidf", 700.0, p2_acc)
+        write_overall(run / split / "parts", "query_all", 3500.0, 0.3)
+    points = sol_v2.overall_points(run / "template-test" / "parts", ["p2_tfidf", "query_all"])
+    assert [(p["router"], p["mean_tokens"], p["answer_accuracy"]) for p in points] == [
+        ("p2_tfidf", 700.0, 0.7), ("query_all", 3500.0, 0.3)]
+    panels = [points, sol_v2.overall_points(run / "paraphrase-test" / "parts", ["p2_tfidf", "query_all"])]
+    title = sol_v2.fig8_title(panels)
+    assert "answers more questions correctly than query_all" in title
+    assert "0.70 vs 0.30 at 80% fewer tokens" in title and "0.60 vs 0.30" in title
+
+    out = tmp_path / "fig8.png"
+    assert sol_v2.main(["fig8", "--run", str(run), "--out", str(out), "--template-routers", "p2_tfidf", "query_all",
+                        "--paraphrase-routers", "p2_tfidf", "query_all"]) == 0
+    assert out.stat().st_size > 0
+
+
+def test_fig8_refuses_a_run_without_answer_accuracy(tmp_path):
+    write_overall(tmp_path, "p1", 700.0, "")
+    with pytest.raises(ValueError, match="answer_accuracy"):
+        sol_v2.overall_points(tmp_path, ["p1"])
+
+
+def test_fig8_groups_coinciding_points_under_one_label():
+    points = [{"router": r, "mean_tokens": t, "answer_accuracy": a}
+              for r, t, a in [("oracle", 693.0, 0.672), ("p1", 701.0, 0.672), ("query_all", 3200.0, 0.316)]]
+    groups = sol_v2._label_groups(points, x_tol=100, y_tol=0.02)
+    assert [[p["router"] for p in g] for g in groups] == [["oracle", "p1"], ["query_all"]]
