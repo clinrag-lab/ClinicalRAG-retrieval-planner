@@ -56,7 +56,21 @@ test`, or the tau sweep on held-out phrasings, for a fair P2 number.
 
 The LLM router and vector-only RAG baselines are left to the team. The answer
 step is a slot: `llm/answerer.py` defines the `Answerer` protocol, and
-`NullAnswerer`, the default, returns no answer, so only retrieval is scored.
+`NullAnswerer`, the default (`--answerer none`), returns no answer, so only
+retrieval is scored.
+
+`--answerer llama` runs Llama-3.1-8B-Instruct (`llm/llama.py`; install with
+`pip install -e ".[llm]"`, `--llm-dtype bf16` or `4bit`). The module is
+imported only for that flag. Every router's evidence goes to the answerer in
+plan order, cut to `max_context_tokens` (planner config, default 8192): the
+first item that does not fit and everything after it are dropped. Lab rows are
+sent one per line, oldest to newest; class A latest and max questions retrieve
+only the row that answers them (`StructuredFilter.agg`). The output is parsed
+by `eval/parse.py` against the answer type of the question's template. A null
+or unparseable answer scores 0. Each `results.jsonl` row records `answer_raw`,
+`answer`, `answer_score`, `parse_failed`, `prompt_tokens_sent` and `truncated`;
+`results.csv` and `results.md` add `answer_accuracy`, `parse_failure_rate` and
+`truncated_rate` per router and class.
 
 ## Calibration
 

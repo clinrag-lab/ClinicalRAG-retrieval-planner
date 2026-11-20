@@ -1,4 +1,9 @@
+"""Manual check, not part of pytest: loads Llama-3.1-8B-Instruct (GPU and Hugging Face access needed).
 
+    python scripts/manual/test_llama_types.py
+"""
+
+from clinrag.eval.parse import parse_answer
 from clinrag.llm.llama import LlamaAnswerer
 from clinrag.question import QuestionSpec
 
@@ -31,9 +36,10 @@ evidence_yesno = [
     }
 ]
 
-answer, tokens, latency = answerer.answer(
-    question_yesno, evidence_yesno
+raw, tokens, latency = answerer.answer(
+    question_yesno, evidence_yesno, template_id="B_admission_antibiotics"
 )
+answer = parse_answer(raw, "yesno").value
 
 print("\n=== YES/NO TEST ===")
 print("Answer:", answer)
@@ -70,9 +76,10 @@ evidence_list = [
     },
 ]
 
-answer, tokens, latency = answerer.answer(
-    question_list, evidence_list
+raw, tokens, latency = answerer.answer(
+    question_list, evidence_list, template_id="B_list_antibiotics"
 )
+answer = parse_answer(raw, "list").value
 
 print("\n=== LIST TEST ===")
 print("Answer:", answer)

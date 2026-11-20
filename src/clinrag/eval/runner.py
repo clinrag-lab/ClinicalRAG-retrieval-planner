@@ -257,7 +257,8 @@ def build_answerer(kind: str = "none", llm_dtype: str = "bf16") -> Answerer:
             raise ValueError(f"unknown llm dtype {llm_dtype!r}; expected one of {LLM_DTYPES}")
         from clinrag.llm.llama import LlamaAnswerer
 
-        return LlamaAnswerer(dtype=llm_dtype)
+        # The runner's max_context_tokens is the one evidence budget, so the answerer's own cap is off.
+        return LlamaAnswerer(dtype=llm_dtype, max_evidence_tokens=None)
     raise ValueError(f"unknown answerer {kind!r}; expected one of {ANSWERERS}")
 
 

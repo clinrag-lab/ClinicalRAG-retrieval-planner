@@ -1,4 +1,9 @@
+"""Manual check, not part of pytest: loads Llama-3.1-8B-Instruct (GPU and Hugging Face access needed).
 
+    python scripts/manual/test_llama.py
+"""
+
+from clinrag.eval.parse import parse_answer
 from clinrag.llm.llama import LlamaAnswerer
 from clinrag.question import QuestionSpec, StructuredFilter
 
@@ -38,10 +43,12 @@ evidence = [
 
 answerer = LlamaAnswerer()
 
-answer, prompt_tokens, latency_ms = answerer.answer(
-    question, evidence
+raw, prompt_tokens, latency_ms = answerer.answer(
+    question, evidence, template_id="A_max_creatinine"
 )
+answer = parse_answer(raw, "number").value
 
+print("Raw output:", raw)
 print("Answer:", answer)
 print("Expected answer:", 2.5)
 print("Prompt tokens:", prompt_tokens)

@@ -7,12 +7,57 @@ this module is imported.
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Sequence
 from typing import Any
 
+from clinrag.eval.parse import answer_type as template_answer_type
 from clinrag.question import QuestionSpec
+
+LAB_ORDER_NOTE = "Lab rows are listed oldest to newest; the last row is the most recent."
+
+
+def lab_line(item: dict[str, Any]) -> str:
+    """One lab row: "<charttime> | <label> | <value> <unit>"."""
+    label = item.get("label") or f"item {item.get('itemid', '?')}"
+    value = f"{float(item['valuenum']):g}"
+    unit = item.get("unit") or ""
+    return f"{item.get('charttime') or 'unknown time'} | {label} | {value} {unit}".rstrip()
+
+
+def format_evidence(evidence_items: Sequence[dict[str, Any]]) -> str:
+    """Evidence as text, in the order it was retrieved.
+
+    Lab rows (items with a valuenum) are grouped per admission under
+    "Admission <id> lab rows:", one line per row, sorted oldest to newest by
+    charttime, after LAB_ORDER_NOTE. Notes stay as text under "Admission <id>
+    note:". Other rows (diagnoses) keep their text, which names the admission.
+    """
+    if not evidence_items:
+        return "No evidence was retrieved."
+
+    blocks: list[Any] = []  # text blocks, or an admission id standing for its lab rows
+    lab_rows: dict[Any, list[dict[str, Any]]] = {}
+    for item in evidence_items:
+        hadm_id = item.get("hadm_id")
+        if item.get("valuenum") is not None:
+            if hadm_id not in lab_rows:
+                lab_rows[hadm_id] = []
+                blocks.append(("lab", hadm_id))
+            lab_rows[hadm_id].append(item)
+        elif item.get("source") == "notes" or "note_id" in item:
+            blocks.append(f"Admission {hadm_id} note:\n{item.get('text', '')}")
+        else:
+            blocks.append(str(item.get("text") or f"Admission {hadm_id}"))
+
+    parts = [LAB_ORDER_NOTE] if lab_rows else []
+    for block in blocks:
+        if isinstance(block, tuple):
+            rows = sorted(lab_rows[block[1]], key=lambda row: str(row.get("charttime") or ""))
+            parts.append("\n".join([f"Admission {block[1]} lab rows:", *(lab_line(row) for row in rows)]))
+        else:
+            parts.append(block)
+    return "\n\n".join(parts)
 
 
 class LlamaAnswerer:
@@ -24,7 +69,7 @@ class LlamaAnswerer:
         self,
         model_id: str = "meta-llama/Llama-3.1-8B-Instruct",
         max_new_tokens: int = 128,
-        max_evidence_tokens: int = 4100,
+        max_evidence_tokens: int | None = 4100,
         dtype: str = "bf16",
     ):
         if dtype not in ("bf16", "4bit"):
@@ -65,20 +110,13 @@ class LlamaAnswerer:
     ) -> str:
         """Convert retrieval results into text for the LLM."""
 
-        if not evidence_items:
-            return "No evidence was retrieved."
+        evidence = format_evidence(evidence_items)
 
-        chunks = []
+        # Limit the amount of evidence sent to Llama. None leaves the limit to
+        # the caller (the runner cuts evidence to max_context_tokens).
+        if self.max_evidence_tokens is None:
+            return evidence
 
-        for i, item in enumerate(evidence_items, start=1):
-            chunks.append(
-                f"Evidence {i}:\n"
-                + json.dumps(item, default=str, ensure_ascii=False)
-            )
-
-        evidence = "\n\n".join(chunks)
-
-        # Limit the amount of evidence sent to Llama.
         token_ids = self.tokenizer.encode(
             evidence,
             add_special_tokens=False,
@@ -99,14 +137,19 @@ class LlamaAnswerer:
 
         return evidence
 
-    def _answer_type(self, question: QuestionSpec) -> str:
-        """Determine the expected answer format."""
+    def _answer_type(self, question: QuestionSpec, template_id: str | None = None) -> str:
+        """Determine the expected answer format from the question's template.
+
+        Without a template id, from the question's slots: a class A filter
+        with a comparison is a yes/no question.
+        """
+
+        if template_id is not None:
+            return template_answer_type(template_id)
 
         if question.qclass == "A":
-            if "ever" in question.text.lower() and (
-                "above" in question.text.lower()
-                or "below" in question.text.lower()
-            ):
+            flt = question.relational_filter
+            if flt is not None and flt.op is not None:
                 return "yesno"
             return "number"
 
@@ -132,14 +175,9 @@ class LlamaAnswerer:
 
         start = time.perf_counter()
 
-        answer_type = self._answer_type(question)
+        answer_type = self._answer_type(question, template_id)
 
         evidence = self._format_evidence(evidence_items)
-
-        if question.qid == "A070":
-            print("\n=== A070 EVIDENCE ===")
-            print(evidence)
-            print("=== END EVIDENCE ===\n")
 
         instructions = {
             "number": (
