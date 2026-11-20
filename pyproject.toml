@@ -13,9 +13,12 @@ dependencies = [
     "faiss-cpu",
     "sentence-transformers",
     "scikit-learn",
+    "scipy",
+    "joblib",
     "numpy",
     "pandas",
     "pyyaml",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]

@@ -21,5 +21,37 @@ probe_k: 20
 # Token weight in plan cost.
 alpha: 1.0
 
+# Planner cost model. Latencies and token averages are starting guesses;
+# calibrate them on real runs.
+
+# Order rule. Filter-first when the filter keeps less than a fraction s of the
+# note index (f / N < s, f matching notes, N notes), else search-first.
+# Search-first fetches ceil(beta * k * N / f) candidates; beta >= 1 corrects for
+# filter and query being correlated. Tune both with python -m clinrag.eval.tune_order.
+s: 0.1
+beta: 1.0
+
+# Average tokens per relational result row and per note chunk.
+avg_tokens_per_row: 20
+avg_tokens_per_chunk: 256
+
+# Estimated latency (ms) of one relational query and one graph expansion.
+relational_ms: 20
+graph_ms: 1
+
+# Note search latency (ms): scoring 1000 notes, fetching and post-filtering
+# 1000 candidates, and building and applying a filter over 1000 admission ids.
+note_scan_ms_per_1k_notes: 0.5
+note_fetch_ms_per_1k_candidates: 2.0
+id_filter_ms_per_1k_ids: 1.0
+
+# Evidence check and fallback. A plan's evidence fails the check if it is
+# empty, if the best note similarity is below min_similarity, or if a filtered
+# note search keeps fewer than min_surviving_notes notes. On failure the next
+# cheapest wider plan runs, at most max_fallbacks times.
+min_similarity: 0.3
+min_surviving_notes: 1
+max_fallbacks: 2
+
 # Where run outputs are written (git-ignored).
 output_dir: outputs/
