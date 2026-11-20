@@ -25,10 +25,7 @@ else
     conda create -y -p "$CLINRAG_ENV" python=3.11
 fi
 
-set +u
-# shellcheck disable=SC1091
-source activate "$CLINRAG_ENV"
-set -u
+activate_env
 
 python -c 'import sys; assert sys.version_info[:2] == (3, 11), sys.version'
 
@@ -42,6 +39,16 @@ python -c 'import torch; print(f"torch=={torch.__version__}")' > "$CONSTRAINTS"
 
 cd "$REPO_ROOT"
 python -m pip install -c "$CONSTRAINTS" -e ".[dev,llm]"
+
+python -m pip check
+# transformers turns PyTorch support off, without an error, when it finds a torch it does not
+# support (transformers 5 needs torch 2.6+), and the job would only fail when it loads Llama.
+if ! python -c 'import sys, transformers.utils as u; sys.exit(0 if u.is_torch_available() else 1)'; then
+    echo "ERROR: transformers does not see torch; check the transformers and torch versions above." >&2
+    python -m pip list 2>/dev/null | grep -iE '^(torch|transformers|sentence-transformers|huggingface.hub) ' >&2
+    exit 1
+fi
+echo "transformers sees torch: OK"
 
 echo
 echo "Env:     $CLINRAG_ENV"

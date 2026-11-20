@@ -44,6 +44,7 @@ https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct. Then:
 ```bash
 module load mamba/latest
 source activate /scratch/$USER/envs/clinrag
+export PATH=/scratch/$USER/envs/clinrag/bin:$PATH   # see Known issues
 export HF_HOME=/scratch/$USER/hf
 hf auth login            # paste a read token; older huggingface_hub: huggingface-cli login
 ```
@@ -116,6 +117,21 @@ Submit again with the same command. The job skips every router whose results are
 (one row per test question, with the llama answerer in bf16) and reruns any incomplete router from
 the start. A router that fails doesn't stop the others. The job then exits with an error, names
 the failed routers at the end of the log and skips the summary.
+
+## Known issues
+
+**`No module named clinrag` after activating the env.** On Sol, `source activate <path>` can
+leave the mamba base python first on `PATH`, so `python` is not the env's python. `activate_env`
+in `common.sh` now puts `/scratch/$USER/envs/clinrag/bin` first and prints the python it will use.
+In an interactive shell, run `export PATH=/scratch/$USER/envs/clinrag/bin:$PATH` after activating,
+and check with `which python`.
+
+**transformers ignores torch.** torch is 2.5.1 from the CUDA 12.1 wheels. transformers 5 needs
+torch 2.6+ and, with an older torch, disables PyTorch support without an error, so loading Llama
+fails later. sentence-transformers 6 requires transformers 5. `pyproject.toml` therefore pins
+`transformers>=4.56,<5`, `sentence-transformers>=3,<6` and `huggingface_hub>=0.34,<1`, and
+`setup_env.sh` runs `pip check` and stops if `transformers.utils.is_torch_available()` is false.
+An env built before the pins can be fixed by rerunning `bash scripts/sol/setup_env.sh`.
 
 ## If the job is rejected for the partition
 

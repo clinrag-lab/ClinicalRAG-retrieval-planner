@@ -11,7 +11,9 @@ requires-python = ">=3.10"
 dependencies = [
     "duckdb",
     "faiss-cpu",
-    "sentence-transformers",
+    # sentence-transformers 6 needs transformers 5, which needs torch 2.6+ (Sol uses 2.5.1 cu121).
+    "sentence-transformers>=3,<6",
+    "huggingface_hub>=0.34,<1",
     "scikit-learn",
     "scipy",
     "joblib",
@@ -23,7 +25,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
-llm = ["transformers", "accelerate", "bitsandbytes"]
+# transformers 5 needs torch 2.6+ and silently disables PyTorch on 2.5.1; 4.56 is the first
+# release that takes the dtype= argument llama.py passes to from_pretrained.
+llm = ["transformers>=4.56,<5", "accelerate", "bitsandbytes"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -38,4 +38,9 @@ activate_env() {
     # shellcheck disable=SC1091
     source activate "$CLINRAG_ENV"
     set -u
+    # On Sol, `source activate <path>` can leave the mamba base python ahead of the env on PATH,
+    # so `python -m clinrag...` fails with "No module named clinrag". Put the env first.
+    export PATH="$CLINRAG_ENV/bin:$PATH"
+    hash -r
+    echo "Using python: $(command -v python)"
 }
