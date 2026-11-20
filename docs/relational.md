@@ -123,8 +123,10 @@ icd_categories"; this branch keeps the team's mapping.
 - **`run()` is dominated by Python above x10.** Most of its time is building the
   evidence items (text and token counts) in Python, which both sources share, so
   `run()` gains far less than the probes.
-- **Memory.** The x100 benchmark peaked at about 3 GB, mostly the reference
-  source's in-memory tables.
+- **Memory.** The x100 benchmark peaked at 3.2-3.4 GB resident memory over three
+  runs (`ru_maxrss`, recorded per scale in `relational_bench.json`; cross-checked
+  with `/usr/bin/time -l`). Most of it is the 100 scaled copies held in memory,
+  which the reference source queries directly; the DuckDB store reads its file.
 - **Generated notes come from the same tables.** The notes are generated from each
   admission's diagnoses and labs, so filters and note concepts are more
   correlated than in real discharge summaries.

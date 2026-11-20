@@ -27,7 +27,7 @@ is kept, and the table reports the median (and p90) over queries.
 Writes to --out:
     relational_bench.csv        scale, source, method: median and p90 latency over queries
     relational_bench_queries.csv one row per (scale, source, method, query)
-    relational_bench.json       arguments, build times, file sizes, probe accuracy, speedups
+    relational_bench.json       arguments, build times, file sizes, peak memory, probe accuracy, speedups
     relational_bench.png        median latency vs. scale, one line per method and source
 """
 
@@ -36,7 +36,9 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import resource
 import statistics
+import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -243,6 +245,8 @@ def run_scale(
         "duckdb_file_mb": file_mb,
         "count_abs_error_max": max(count_errors),
         "result_mismatches": int(mismatches),
+        # Process peak so far; scales run in ascending order, so this is the peak up to this scale.
+        "peak_rss_mb": peak_rss_mb(),
     }
     return per_query, summary
 
@@ -251,6 +255,12 @@ def _comparable(result: Any) -> Any:
     if hasattr(result, "items"):
         return sorted(json.dumps(i, sort_keys=True) for i in result.items)
     return result
+
+
+def peak_rss_mb() -> float:
+    """Peak resident memory of this process so far, in MB (ru_maxrss: bytes on macOS, KB on Linux)."""
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return peak / 1e6 if sys.platform == "darwin" else peak * 1024 / 1e6
 
 
 # ---- summaries --------------------------------------------------------------------------
@@ -375,7 +385,8 @@ def main(argv: list[str] | None = None) -> Path:
         per_query += rows
         scales.append(summary)
         print(f"x{scale}: {summary['rows']['labevents']} lab rows, {summary['queries']} queries, "
-              f"build {summary['duckdb_build_s']:.1f} s, {time.perf_counter() - start:.1f} s total")
+              f"build {summary['duckdb_build_s']:.1f} s, peak memory {summary['peak_rss_mb']:.0f} MB, "
+              f"{time.perf_counter() - start:.1f} s total")
     if not args.keep_db and not any(work.iterdir()):
         work.rmdir()
 

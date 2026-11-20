@@ -96,6 +96,7 @@ def test_bench_main_on_fixtures(workload, tmp_path):  # noqa: F811
         assert scale["count_abs_error_max"] == 0
         assert scale["result_mismatches"] == 0
         assert 0 < scale["queries"] <= 4
+        assert scale["peak_rss_mb"] > 0
     assert [h["scale"] for h in summary["headline"]] == [1, 3]
     assert (out / "relational_bench.png").stat().st_size > 0
     assert not (out / "work").exists()  # scaled DuckDB files are deleted

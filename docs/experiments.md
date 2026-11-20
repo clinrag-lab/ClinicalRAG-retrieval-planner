@@ -243,9 +243,10 @@ python -m clinrag.eval.relational_bench --tables-dir data/mimic-iv-demo --notes-
 ```
 
 Output: `relational_bench.csv` (median and p90 per scale, source, method),
-`relational_bench_queries.csv`, `relational_bench.json` (build time and file
-size per scale, probe accuracy, speedups) and `relational_bench.png`. The run
-at x100 holds about 10.8M lab rows and peaks at about 3 GB of memory.
+`relational_bench_queries.csv`, `relational_bench.json` (build time, file
+size and peak memory per scale, probe accuracy, speedups) and
+`relational_bench.png`. The run at x100 holds about 10.8M lab rows in memory
+and peaked at 3.2-3.4 GB resident memory over three runs.
 
 Median ms over 24 queries (M2 Pro, 10 DuckDB threads, DuckDB 1.5.6):
 
