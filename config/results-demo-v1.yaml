@@ -1,0 +1,19 @@
+# Planner constants: calibrated timings, order rule s and beta tuned on dev.
+top_k: 5
+probe_k: 20
+alpha: 1.0
+s: 0.5
+beta: 1.0
+avg_tokens_per_row: 11.0
+avg_tokens_per_chunk: 269.41818181818184
+relational_ms: 0.04809671059699827
+graph_ms: 8.973055723664647e-05
+note_scan_ms_per_1k_notes: 1.48983385445216
+note_fetch_ms_per_1k_candidates: 12.021768918795747
+id_filter_ms_per_1k_ids: 0.1670602297044662
+relational_fixed_ms: 3.4925532995119495
+graph_fixed_ms: 0.0005102740114593756
+note_search_fixed_ms: 0.7162513506060377
+min_similarity: 0.05004614412180765
+min_surviving_notes: 1
+max_fallbacks: 2
