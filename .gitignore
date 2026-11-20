@@ -30,3 +30,6 @@ slurm-*.out
 
 # Figures for the docs are tracked
 !docs/figures/*.png
+
+# Sol job logs
+logs/
