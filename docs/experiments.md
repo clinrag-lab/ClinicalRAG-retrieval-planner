@@ -35,6 +35,17 @@ uses them over the demo tables (`data/mimic-iv-demo`) and the generated notes
 These are reference implementations. The team's DuckDB and FAISS sources
 replace them: anything implementing `sources/base.py` plugs in the same way.
 
+`--sources duckdb` replaces the relational source with
+`DuckDBRelationalSource` (`sources/duckdb_relational.py`, see
+docs/relational.md), read from a DuckDB file built once; `--sources
+duckdb_faiss` pairs it with the FAISS notes. Both take `--db` (default
+`data/clinrag.duckdb`):
+
+```
+python scripts/build_duckdb.py --tables-dir data/mimic-iv-demo --out data/clinrag.duckdb
+python -m clinrag.eval.runner --sources duckdb --workload data/workload --split dev
+```
+
 ## Routers
 
 | name | router | sources from | plan |
@@ -210,6 +221,49 @@ This writes `SUMMARY.md` and copies every figure into `figures/`. P2 with
 BGE embeddings is evaluated for routing only: the end-to-end run with BGE
 exceeded laptop memory. `outputs/` is git-ignored, so the tag pins the code
 and the commands, not the result files.
+
+## Relational probe cost vs. data size
+
+Supports C1, cheap cost estimates without stored statistics: the planner's
+relational probes must stay cheap as the tables grow. `eval/relational_bench.py`
+replicates the demo hosp tables S times (new hadm_id, subject_id and
+labevent_id per copy; same codes and values) and the generated notes' metadata
+with them. For the distinct relational queries of the class C and D dev
+questions (24, evenly spaced) it times `count`, `matching_ids`, `count_notes`,
+`count_matches` and `run` on `DemoRelationalSource` (tables in memory) and on
+`DuckDBRelationalSource` (a file built from the same tables under
+`outputs/relational_bench/work/`, deleted afterwards). Each call is warmed up
+once and timed 5 times; the per-query median is kept, and the table reports
+the median over queries. It also checks that `count()` equals the rows `run()`
+returns and that both sources return the same results at every scale.
+
+```
+python -m clinrag.eval.relational_bench --tables-dir data/mimic-iv-demo --notes-dir data/generated \
+    --workload data/workload --split dev --scales 1 10 50 100 --out outputs/relational_bench
+```
+
+Output: `relational_bench.csv` (median and p90 per scale, source, method),
+`relational_bench_queries.csv`, `relational_bench.json` (build time, file
+size and peak memory per scale, probe accuracy, speedups) and
+`relational_bench.png`. The run at x100 holds about 10.8M lab rows in memory
+and peaked at 3.2-3.4 GB resident memory over three runs.
+
+Median ms over 24 queries (M2 Pro, 10 DuckDB threads, DuckDB 1.5.6):
+
+| scale (lab rows) | source | count | matching_ids | count_notes | count_matches | run |
+|---|---|---|---|---|---|---|
+| x1 (0.11M) | reference | 1.09 | 1.71 | 1.62 | 2.71 | 2.59 |
+| x1 (0.11M) | duckdb | 0.29 | 0.90 | 0.74 | 1.70 | 1.11 |
+| x100 (10.8M) | reference | 10.08 | 16.53 | 14.05 | 13.67 | 55.42 |
+| x100 (10.8M) | duckdb | 1.18 | 3.39 | 2.77 | 2.97 | 37.24 |
+
+`count()` predicted the rows of `run()` exactly at every scale, and the two
+sources returned identical results. On the DuckDB store, `count_matches`, the
+planner's one-query probe, grows from 1.7 to 3.0 ms over 100x more data and
+costs a median 8% of running the query at x100 (24% on the reference).
+`run()` gains least (1.5x): above x10 its time is mostly building the evidence
+items in Python. Building the file takes 1.2 s at x100 (112 MB). The x100 copy
+replicates the demo, so every query's selectivity is the same at every scale.
 
 ## Caveats on the demo
 
