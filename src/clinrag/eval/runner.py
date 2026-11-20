@@ -212,6 +212,23 @@ def build_router(
     raise ValueError(f"unknown router {name!r}; expected one of {ROUTERS}")
 
 
+ANSWERERS = ("none", "llama")
+LLM_DTYPES = ("bf16", "4bit")
+
+
+def build_answerer(kind: str = "none", llm_dtype: str = "bf16") -> Answerer:
+    """Answerer for a CLI name. The llama module (torch, transformers) is imported only for "llama"."""
+    if kind == "none":
+        return NullAnswerer()
+    if kind == "llama":
+        if llm_dtype not in LLM_DTYPES:
+            raise ValueError(f"unknown llm dtype {llm_dtype!r}; expected one of {LLM_DTYPES}")
+        from clinrag.llm.llama import LlamaAnswerer
+
+        return LlamaAnswerer(dtype=llm_dtype)
+    raise ValueError(f"unknown answerer {kind!r}; expected one of {ANSWERERS}")
+
+
 # ---- one question -----------------------------------------------------------------------
 
 
@@ -246,7 +263,7 @@ def run_question(
     result = replace(result, latency_ms=statistics.median(latencies), planning_overhead_ms=statistics.median(overheads))
     score = retrieval_score(question, run.items, config.top_k)
 
-
+    answerer = answerer or NullAnswerer()
     answer, prompt_tokens, answer_ms = answerer.answer(spec, run.items)
     answer_score = None if answer is None else score_answer(question, answer).value
 
@@ -438,6 +455,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="ablation: execute the chosen plan once and never fall back")
     parser.add_argument("--no-probes", action="store_true",
                         help="ablation: cost plans with fixed defaults instead of probe results (oracle, p2_*)")
+    parser.add_argument("--answerer", choices=ANSWERERS, default="none",
+                        help="answer step: none (retrieval metrics only) or llama (Llama-3.1-8B-Instruct, needs the llm extra)")
+    parser.add_argument("--llm-dtype", choices=LLM_DTYPES, default="bf16",
+                        help="with --answerer llama: bf16 weights, or 4-bit quantized (bitsandbytes)")
     parser.add_argument("--fig6", action="store_true", help="write figures/fig6_paraphrase_e2e.png (tokens vs recall)")
     return parser.parse_args(argv)
 
@@ -464,13 +485,11 @@ def main(argv: list[str] | None = None) -> Path:
         encoding="utf-8",
     )
     classifiers = load_or_train_classifiers(args.routers, train_workload, args.p2_train, args.p2_model_dir)
-    from clinrag.llm.llama import LlamaAnswerer
-
-    answerer = LlamaAnswerer()
-
+    answerer = build_answerer(args.answerer, args.llm_dtype)
     records = run_experiment(
         sources, questions, args.routers, config, train_workload, out, args.tau, args.repeats,
-        progress=print, classifiers=classifiers, no_fallback=args.no_fallback, probe_defaults=probe_defaults, answerer=answerer,
+        progress=print, classifiers=classifiers, no_fallback=args.no_fallback, probe_defaults=probe_defaults,
+        answerer=answerer,
     )
     if args.fig6:
         from clinrag.eval.analysis import fig_paraphrase_e2e

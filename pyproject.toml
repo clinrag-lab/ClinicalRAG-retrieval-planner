@@ -23,6 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+llm = ["transformers", "accelerate", "bitsandbytes"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

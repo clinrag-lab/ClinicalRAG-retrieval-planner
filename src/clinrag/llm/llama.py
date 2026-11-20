@@ -29,16 +29,22 @@ class LlamaAnswerer:
         model_id: str = "meta-llama/Llama-3.1-8B-Instruct",
         max_new_tokens: int = 128,
         max_evidence_tokens: int = 4100,
+        dtype: str = "bf16",
     ):
+        if dtype not in ("bf16", "4bit"):
+            raise ValueError(f"dtype must be 'bf16' or '4bit', got {dtype!r}")
         self.max_new_tokens = max_new_tokens
         self.max_evidence_tokens = max_evidence_tokens
 
-        quantization_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-        )
+        # bf16 loads the full weights; 4bit quantizes them with bitsandbytes.
+        quantization_config = None
+        if dtype == "4bit":
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+            )
 
         print("Loading Llama tokenizer...")
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
