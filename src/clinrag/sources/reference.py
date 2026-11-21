@@ -33,6 +33,13 @@ from clinrag.workload.tables import connect_tables, has_table, table_path
 
 _SQL_OPS = {"<": "<", "<=": "<=", ">": ">", ">=": ">=", "=": "=", "!=": "<>"}
 
+# Row order of a lab query by StructuredFilter.agg. An aggregate keeps one row.
+_LAB_ORDER = {
+    None: "ORDER BY l.hadm_id, l.charttime, l.labevent_id",
+    "latest": "ORDER BY l.charttime DESC, l.labevent_id DESC LIMIT 1",
+    "max": "ORDER BY l.valuenum DESC, l.charttime DESC, l.labevent_id DESC LIMIT 1",
+}
+
 
 class DemoRelationalSource(RelationalSource):
     """RelationalQuery over the hosp tables in a DuckDB connection.
@@ -42,13 +49,19 @@ class DemoRelationalSource(RelationalSource):
       non-null hadm_id and numeric valuenum, matching itemid, the comparison on
       valuenum (any row of an admission can pass, as in class C gold), and
       lab.hadm_id when set;
+    - lab.agg: of those rows, exactly one (none if nothing matches). "latest" is
+      the row with the greatest charttime, "max" the row with the highest
+      valuenum; ties go to the later charttime, then the higher labevent_id,
+      as in class A gold (workload/tables.py lab_summary). count() is then at
+      most 1; matching_ids and the note counts are unchanged, since agg needs
+      lab.hadm_id and the row comes from that admission;
     - icd_codes: version-qualified codes ("10:I214"), matched on
       (icd_version, icd_code) via unqualify();
     - lab and codes: lab rows of admissions with at least one of the codes;
     - codes only: one row per matching diagnoses_icd row.
 
-    Lab items carry hadm_id, text, itemid, valuenum, charttime; diagnosis
-    items carry hadm_id, text, icd_code, icd_version.
+    Lab items carry hadm_id, text, itemid, label, valuenum, unit, charttime;
+    diagnosis items carry hadm_id, text, icd_code, icd_version.
     """
 
     def __init__(self, con: duckdb.DuckDBPyConnection) -> None:
@@ -111,7 +124,8 @@ class DemoRelationalSource(RelationalSource):
 
     def count(self, query: RelationalQuery) -> int:
         sql, params, _ = self._from_where(query)
-        return int(self.con.execute(f"SELECT count(*) {sql}", params).fetchone()[0])
+        n = int(self.con.execute(f"SELECT count(*) {sql}", params).fetchone()[0])
+        return min(n, 1) if query.lab is not None and query.lab.agg is not None else n
 
     def matching_ids(self, query: RelationalQuery) -> list[int]:
         sql, params, is_lab = self._from_where(query)
@@ -167,9 +181,9 @@ class DemoRelationalSource(RelationalSource):
         sql, params, is_lab = self._from_where(query)
         items: list[dict[str, Any]] = []
         if is_lab:
+            assert query.lab is not None
             rows = self.con.execute(
-                f"SELECT l.hadm_id, l.itemid, l.valuenum, l.valueuom, l.charttime {sql} "
-                "ORDER BY l.hadm_id, l.charttime, l.labevent_id",
+                f"SELECT l.hadm_id, l.itemid, l.valuenum, l.valueuom, l.charttime {sql} {_LAB_ORDER[query.lab.agg]}",
                 params,
             ).fetchall()
             for hadm, itemid, value, uom, charttime in rows:
@@ -178,7 +192,9 @@ class DemoRelationalSource(RelationalSource):
                 items.append({
                     "hadm_id": int(hadm),
                     "itemid": int(itemid),
+                    "label": label,
                     "valuenum": float(value),
+                    "unit": str(uom) if uom else "",
                     "charttime": str(charttime),
                     "text": f"Admission {hadm}: {label} {value:g}{unit} at {charttime}",
                 })

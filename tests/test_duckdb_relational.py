@@ -101,6 +101,8 @@ def _lab_values(tables_dir: Path) -> dict[int, list[float]]:
 def query_grid(graph: IcdGraph, tables_dir: Path) -> list[RelationalQuery]:
     """Each lab itemid x ops x thresholds x hadm_id x code sets, plus codes-only per category.
 
+    For every admission (and an unknown one), each lab item is also queried with
+    agg latest and max, with and without a comparison and a code set.
     Thresholds are the item's min, median and max values, so every op meets ties.
     Code sets: none, three chapters, a block, an unknown code, and a known code
     string under the wrong ICD version.
@@ -115,10 +117,31 @@ def query_grid(graph: IcdGraph, tables_dir: Path) -> list[RelationalQuery]:
         conditions = [(None, None)] + [(op, t) for op in OPS[1:] for t in thresholds]
         for (op, t), hadm, codes in itertools.product(conditions, hadms, code_sets):
             queries.append(RelationalQuery(lab=StructuredFilter(itemid, op, t, hadm), icd_codes=codes))
+        aggregated = [(None, None), (">", thresholds[0]), ("<=", thresholds[len(thresholds) // 2])]
+        for (op, t), n, agg, codes in itertools.product(aggregated, (*range(1, 9), 99), ("latest", "max"), code_sets[:2]):
+            queries.append(RelationalQuery(lab=StructuredFilter(itemid, op, t, h(n), agg=agg), icd_codes=codes))
     queries.append(RelationalQuery(lab=StructuredFilter(123456)))  # unknown itemid
     queries += [RelationalQuery(icd_codes=tuple(graph.expand(c))) for c in CATEGORIES if graph.expand(c)]
     queries += [RelationalQuery(icd_codes=codes) for codes in code_sets if codes]
     return queries
+
+
+def test_agg_returns_the_same_single_row_as_the_reference(extended_pair):
+    """latest and max, including the charttime tie on admission 03 (labevent 7 and 25 share a time)."""
+    reference, duck = extended_pair
+    for agg, expected in (("latest", 1.1), ("max", 1.1)):
+        query = RelationalQuery(lab=StructuredFilter(CREATININE, hadm_id=h(3), agg=agg))
+        rows = duck.relational.run(query).items
+        assert rows == reference.relational.run(query).items
+        assert [r["valuenum"] for r in rows] == [expected] and duck.relational.count(query) == 1
+    latest = RelationalQuery(lab=StructuredFilter(CREATININE, hadm_id=h(2), agg="latest"))
+    highest = RelationalQuery(lab=StructuredFilter(CREATININE, hadm_id=h(2), agg="max"))
+    assert [r["valuenum"] for r in duck.relational.run(latest).items] == [4.9]
+    assert [r["valuenum"] for r in duck.relational.run(highest).items] == [6.4]
+    row = duck.relational.run(latest).items[0]
+    assert (row["label"], row["unit"], row["charttime"]) == ("Creatinine", "mg/dL", "2151-07-18 06:00:00")
+    missing = RelationalQuery(lab=StructuredFilter(CREATININE, hadm_id=h(99), agg="max"))
+    assert duck.relational.run(missing).items == [] and duck.relational.count(missing) == 0
 
 
 def _canonical(items):

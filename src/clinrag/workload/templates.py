@@ -1,6 +1,8 @@
 """Question templates for the four workload classes, with gold answers.
 
-A  relational only     per-admission lab questions (most recent, max, ever above T)
+A  relational only     per-admission lab questions (most recent, max, ever above T);
+                       most recent and max ask the source for that one row (agg),
+                       ever above T stays a predicate over the admission's rows
 B  notes only          which discharge summaries mention a concept, and
                        per-admission yes/no: does this admission's summary mention it
 C  filter + notes      among admissions with a lab above T, which summaries mention a concept
@@ -140,11 +142,11 @@ def _a_question(kind: str, lab: Lab, hadm_id: int, values: tuple[float, float]) 
     mx, latest = values
     if kind == "latest":
         text = f"What was the most recent {lab.name} value during admission {hadm_id}?"
-        flt = StructuredFilter(lab.itemid, hadm_id=hadm_id)
+        flt = StructuredFilter(lab.itemid, hadm_id=hadm_id, agg="latest")
         answer: float | int = latest
     elif kind == "max":
         text = f"What was the highest {lab.name} value during admission {hadm_id}?"
-        flt = StructuredFilter(lab.itemid, hadm_id=hadm_id)
+        flt = StructuredFilter(lab.itemid, hadm_id=hadm_id, agg="max")
         answer = mx
     else:
         t = lab.above_threshold

@@ -36,7 +36,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import resource
 import statistics
 import sys
 import time
@@ -258,7 +257,34 @@ def _comparable(result: Any) -> Any:
 
 
 def peak_rss_mb() -> float:
-    """Peak resident memory of this process so far, in MB (ru_maxrss: bytes on macOS, KB on Linux)."""
+    """Peak resident memory of this process so far, in MB.
+
+    ru_maxrss on Unix (bytes on macOS, KB on Linux). The resource module does
+    not exist on Windows; there it is the process's peak working set.
+    """
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        class Counters(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+                (name, ctypes.c_size_t)
+                for name in ("PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage", "QuotaPagedPoolUsage",
+                             "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage")
+            ]
+
+        counters = Counters()
+        counters.cb = ctypes.sizeof(Counters)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+        if not psapi.GetProcessMemoryInfo(kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return counters.PeakWorkingSetSize / 1e6
+
+    import resource
+
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return peak / 1e6 if sys.platform == "darwin" else peak * 1024 / 1e6
 

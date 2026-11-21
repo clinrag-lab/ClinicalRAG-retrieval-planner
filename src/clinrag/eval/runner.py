@@ -27,7 +27,10 @@ outputs/runs/<timestamp>/):
 
     results.jsonl  one line per (router, question): every RoutingResult field,
                    recall, estimated and measured cost, selectivity, answer fields
-    results.csv    per router and class: recall, tokens, latency, overhead, fallbacks
+                   (answer, answer_raw, answer_score, parse_failed, prompt_tokens,
+                   prompt_tokens_sent, truncated)
+    results.csv    per router and class: recall, tokens, latency, overhead, fallbacks;
+                   with an answerer also answer_accuracy, parse_failure_rate, truncated_rate
     results.md     the same as tables
     run.json       arguments and planner config
     analysis/      cost model check, order check, overhead share, tau sweep
@@ -36,6 +39,14 @@ outputs/runs/<timestamp>/):
 
 P2 routers train their classifier on <workload>/dev.jsonl at start-up, so on
 the dev split P2 is evaluated on its own training questions.
+
+Answer step (--answerer, default none): the first repeat's evidence, in plan
+order and cut to max_context_tokens (PlannerConfig; the same budget for every
+router), goes to the answerer. prompt_tokens_sent is the evidence tokens sent
+and truncated says whether evidence was dropped. The output is parsed and
+scored by clinrag.eval.parse; a null or unparseable answer scores 0 and
+parse_failed marks the unparseable ones. --answerer llama runs
+Llama-3.1-8B-Instruct (pip install -e ".[llm]"; --llm-dtype bf16 or 4bit).
 
 Ablations (recorded in run.json and in every results.jsonl row):
     --no-fallback  execute the chosen plan once; never fall back
@@ -64,7 +75,8 @@ import numpy as np
 
 from clinrag.baselines.fixed import AlwaysFilterFirstRouter, AlwaysSearchFirstRouter, QueryAllRouter
 from clinrag.config import PlannerConfig, load_planner_config
-from clinrag.eval.metrics import retrieval_score, score_answer
+from clinrag.eval.metrics import retrieval_score
+from clinrag.eval.parse import answer_type, parse_answer, score_parsed
 from clinrag.llm.answerer import Answerer, NullAnswerer
 from clinrag.planner.classifier import SourceClassifier
 from clinrag.planner.probes import ProbeDefaults
@@ -75,6 +87,7 @@ from clinrag.question import ALL_SOURCES
 from clinrag.sources.base import Sources
 from clinrag.sources.caching_encoder import CachingEncoder, clear_query_cache
 from clinrag.sources.reference import build_reference_sources
+from clinrag.sources.tokens import count_tokens
 from clinrag.workload.schema import WorkloadQuestion, read_jsonl
 
 ROUTERS: tuple[str, ...] = (
@@ -246,6 +259,43 @@ def build_router(
     raise ValueError(f"unknown router {name!r}; expected one of {ROUTERS}")
 
 
+def fit_context(items: Sequence[dict[str, Any]], max_tokens: int) -> tuple[list[dict[str, Any]], int, bool]:
+    """(items sent, their tokens, truncated): evidence in plan order up to max_tokens.
+
+    Items are whole and stay in the order the plan produced them; the first item
+    that does not fit ends the context, and it and everything after it are
+    dropped. Tokens are count_tokens of the item text, the unit of the
+    retrieval token metric. The budget does not depend on the router.
+    """
+    sent: list[dict[str, Any]] = []
+    used = 0
+    for item in items:
+        tokens = count_tokens(item["text"])
+        if used + tokens > max_tokens:
+            return sent, used, True
+        sent.append(item)
+        used += tokens
+    return sent, used, False
+
+
+ANSWERERS = ("none", "llama")
+LLM_DTYPES = ("bf16", "4bit")
+
+
+def build_answerer(kind: str = "none", llm_dtype: str = "bf16") -> Answerer:
+    """Answerer for a CLI name. The llama module (torch, transformers) is imported only for "llama"."""
+    if kind == "none":
+        return NullAnswerer()
+    if kind == "llama":
+        if llm_dtype not in LLM_DTYPES:
+            raise ValueError(f"unknown llm dtype {llm_dtype!r}; expected one of {LLM_DTYPES}")
+        from clinrag.llm.llama import LlamaAnswerer
+
+        # The runner's max_context_tokens is the one evidence budget, so the answerer's own cap is off.
+        return LlamaAnswerer(dtype=llm_dtype, max_evidence_tokens=None)
+    raise ValueError(f"unknown answerer {kind!r}; expected one of {ANSWERERS}")
+
+
 # ---- one question -----------------------------------------------------------------------
 
 
@@ -262,6 +312,11 @@ def run_question(
     """Decide and execute repeats times; one JSON-ready record.
 
     max_fallbacks: None uses config.max_fallbacks; 0 is the no-fallback ablation.
+
+    The answerer gets the first repeat's evidence cut to config.max_context_tokens
+    (fit_context). Its output is parsed and scored with clinrag.eval.parse; with
+    a real answerer a null or unparseable answer scores 0. With NullAnswerer the
+    answer fields are None.
     """
     if repeats < 1:
         raise ValueError("repeats must be at least 1")
@@ -281,8 +336,13 @@ def run_question(
     score = retrieval_score(question, run.items, config.top_k)
 
     answerer = answerer or NullAnswerer()
-    answer, prompt_tokens, answer_ms = answerer.answer(spec, run.items)
-    answer_score = None if answer is None else score_answer(question, answer).value
+    evidence, prompt_tokens_sent, truncated = fit_context(run.items, config.max_context_tokens)
+    raw, prompt_tokens, answer_ms = answerer.answer(spec, evidence, template_id=question.template_id)
+    if answerer.name == NullAnswerer.name:
+        answer, answer_score, parse_failed = None, None, None  # no answer step: retrieval metrics only
+    else:
+        parsed = parse_answer(raw, answer_type(question.template_id))
+        answer, answer_score, parse_failed = parsed.value, score_parsed(question, parsed), parsed.failed
 
     record = result.to_dict()
     plan_sources = decision.plan.sources
@@ -300,8 +360,12 @@ def run_question(
         "overhead_runs_ms": overheads,
         "answerer": answerer.name,
         "answer": answer,
+        "answer_raw": raw,
         "answer_score": answer_score,
+        "parse_failed": parse_failed,
         "prompt_tokens": prompt_tokens,
+        "prompt_tokens_sent": prompt_tokens_sent,
+        "truncated": truncated,
         "answer_latency_ms": answer_ms,
     })
     return record
@@ -314,6 +378,12 @@ SUMMARY_FIELDS = (
     "mean_overhead_ms", "fallback_rate", "missed_source_rate", "mean_sources_queried", "sources_queried",
     "mean_est_cost", "mean_measured_cost",
 )
+# Added to results.csv and results.md only when an answerer was used.
+ANSWER_FIELDS = ("answer_accuracy", "parse_failure_rate", "truncated_rate")
+
+
+def answerer_used(records: Sequence[dict[str, Any]]) -> bool:
+    return any(r.get("answerer", NullAnswerer.name) != NullAnswerer.name for r in records)
 
 
 def _mean(values: Sequence[float | None]) -> float | None:
@@ -322,8 +392,14 @@ def _mean(values: Sequence[float | None]) -> float | None:
 
 
 def summarize(records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    """One row per (router, class) plus (router, "all"), routers in first-seen order."""
+    """One row per (router, class) plus (router, "all"), routers in first-seen order.
+
+    With an answerer, rows also carry ANSWER_FIELDS: mean answer score (0 for a
+    null or unparseable answer), share of unparseable answers, and share of
+    questions whose evidence was cut to the context budget.
+    """
     routers = list(dict.fromkeys(r["router"] for r in records))
+    with_answers = answerer_used(records)
     rows = []
     for router in routers:
         mine = [r for r in records if r["router"] == router]
@@ -349,6 +425,12 @@ def summarize(records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
                 "mean_est_cost": _mean([r["est_cost"] for r in group]),
                 "mean_measured_cost": _mean([r["measured_cost"] for r in group]),
             })
+            if with_answers:
+                rows[-1].update({
+                    "answer_accuracy": _mean([r["answer_score"] for r in group]),
+                    "parse_failure_rate": sum(bool(r["parse_failed"]) for r in group) / len(group),
+                    "truncated_rate": sum(bool(r["truncated"]) for r in group) / len(group),
+                })
     return rows
 
 
@@ -369,14 +451,24 @@ def markdown_table(rows: Sequence[dict[str, Any]], fields: Sequence[str]) -> str
 
 def write_summaries(out: Path, records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = summarize(records)
+    with_answers = answerer_used(records)
     with (out / "results.csv").open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDS)
+        writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDS + ANSWER_FIELDS if with_answers else SUMMARY_FIELDS)
         writer.writeheader()
         writer.writerows(rows)
     overall = [r for r in rows if r["qclass"] == "all"]
     per_class = [r for r in rows if r["qclass"] != "all"]
     short = ("router", "qclass", "n", "mean_recall", "mean_tokens", "mean_latency_ms", "p95_latency_ms",
              "mean_overhead_ms", "fallback_rate", "missed_source_rate", "sources_queried")
+    answer_notes = []
+    if with_answers:
+        short += ANSWER_FIELDS
+        answer_notes = [
+            "answer_accuracy: mean answer score (numeric or yes/no match, set F1 for lists); "
+            "a null or unparseable answer scores 0.",
+            "parse_failure_rate: share of answers with no value of the expected type.",
+            "truncated_rate: share of questions whose evidence was cut to max_context_tokens.",
+        ]
     md = [
         "# Results",
         "",
@@ -385,6 +477,7 @@ def write_summaries(out: Path, records: Sequence[dict[str, Any]]) -> list[dict[s
         "fallback_rate: share of questions that ran at least one fallback plan.",
         "missed_source_rate: share of questions whose chosen plan lacks a source the question needs.",
         "sources_queried: share of questions that queried each source.",
+        *answer_notes,
         "",
         "## All classes",
         "",
@@ -473,6 +566,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="ablation: execute the chosen plan once and never fall back")
     parser.add_argument("--no-probes", action="store_true",
                         help="ablation: cost plans with fixed defaults instead of probe results (oracle, p2_*)")
+    parser.add_argument("--answerer", choices=ANSWERERS, default="none",
+                        help="answer step: none (retrieval metrics only) or llama (Llama-3.1-8B-Instruct, needs the llm extra)")
+    parser.add_argument("--llm-dtype", choices=LLM_DTYPES, default="bf16",
+                        help="with --answerer llama: bf16 weights, or 4-bit quantized (bitsandbytes)")
     parser.add_argument("--fig6", action="store_true", help="write figures/fig6_paraphrase_e2e.png (tokens vs recall)")
     return parser.parse_args(argv)
 
@@ -499,9 +596,11 @@ def main(argv: list[str] | None = None) -> Path:
         encoding="utf-8",
     )
     classifiers = load_or_train_classifiers(args.routers, train_workload, args.p2_train, args.p2_model_dir)
+    answerer = build_answerer(args.answerer, args.llm_dtype)
     records = run_experiment(
         sources, questions, args.routers, config, train_workload, out, args.tau, args.repeats,
         progress=print, classifiers=classifiers, no_fallback=args.no_fallback, probe_defaults=probe_defaults,
+        answerer=answerer,
     )
     if args.fig6:
         from clinrag.eval.analysis import fig_paraphrase_e2e

@@ -37,6 +37,7 @@ class PlannerConfig:
     min_similarity: float = 0.3  # evidence check: best note score below this fails
     min_surviving_notes: int = 1  # evidence check: fewer notes after a filter fails
     max_fallbacks: int = 2  # plans run after the first when the evidence check fails
+    max_context_tokens: int = 8192  # evidence tokens (count_tokens) sent to the answerer, same for every router
 
     def __post_init__(self) -> None:
         for f in fields(self):
@@ -44,6 +45,8 @@ class PlannerConfig:
                 raise ValueError(f"{f.name} must be non-negative")
         if self.top_k < 1 or self.probe_k < 1:
             raise ValueError("top_k and probe_k must be at least 1")
+        if self.max_context_tokens < 1:
+            raise ValueError("max_context_tokens must be at least 1")
         if not 0 < self.s <= 1:
             raise ValueError("s must be in (0, 1]")
         if self.beta <= 0:
